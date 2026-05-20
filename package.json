@@ -1,0 +1,15 @@
+{
+  "name": "codex-plugin-claude-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Codex plugin MVP that asks local Claude Code CLI for read-only implementation plans.",
+  "scripts": {
+    "lint": "node --check plugins/claude/scripts/claude-companion.mjs && node --check tests/claude-companion.test.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

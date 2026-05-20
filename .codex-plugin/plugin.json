@@ -1,0 +1,33 @@
+{
+  "name": "claude",
+  "version": "0.1.0",
+  "description": "Use the local Claude Code CLI from Codex to produce read-only implementation plans.",
+  "author": {
+    "name": "sangjinsu"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "planning",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Claude Code Planner",
+    "shortDescription": "Ask local Claude Code for implementation plans from Codex.",
+    "longDescription": "A minimal Codex plugin that checks local Claude Code CLI readiness and asks Claude to produce read-only implementation plans. Claude plans; Codex validates and implements.",
+    "developerName": "sangjinsu",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": [
+      "claude:setup",
+      "claude:plan add a small feature"
+    ],
+    "brandColor": "#8B5CF6",
+    "screenshots": []
+  }
+}
