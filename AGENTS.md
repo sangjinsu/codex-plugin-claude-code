@@ -1,8 +1,3 @@
-좋습니다.
-그러면 MVP 기준으로 **`claude:setup`, `claude:plan`만 있는 `AGENTS.md`**는 아래 정도면 충분합니다.
-
----
-
 # AGENTS.md
 
 ## 목표
