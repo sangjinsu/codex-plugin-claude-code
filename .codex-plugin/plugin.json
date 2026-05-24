@@ -1,6 +1,6 @@
 {
   "name": "claude",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Use the local Claude Code CLI from Codex to diagnose setup, recommend skills, and produce read-only implementation plans.",
   "author": {
     "name": "sangjinsu"
