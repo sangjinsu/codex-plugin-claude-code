@@ -36,6 +36,31 @@ test("plan --help lists skill recommendation and dry-run options", () => {
   assert.match(result.stdout, /--format text\|json/);
 });
 
+test("github actions ci exercises Claude-free commands only", () => {
+  const workflowPath = path.join(repoRoot, ".github/workflows/ci.yml");
+
+  assert.equal(fs.existsSync(workflowPath), true);
+
+  const workflow = fs.readFileSync(workflowPath, "utf8");
+
+  assert.match(workflow, /name:\s*CI/);
+  assert.match(workflow, /pull_request:/);
+  assert.match(workflow, /contents:\s*read/);
+  assert.match(workflow, /actions\/checkout@v\d+/);
+  assert.match(workflow, /actions\/setup-node@v\d+/);
+  assert.match(workflow, /node-version:\s*20/);
+  assert.match(workflow, /npm run lint/);
+  assert.match(workflow, /npm test/);
+  assert.match(workflow, /claude-companion\.mjs --help/);
+  assert.match(workflow, /claude-companion\.mjs skills --scope all --query frontend/);
+  assert.match(workflow, /claude-companion\.mjs plan --list-skills --query plan/);
+  assert.match(workflow, /claude-companion\.mjs plan --recommend-skills/);
+  assert.match(workflow, /claude-companion\.mjs plan --dry-run --show-skills/);
+  assert.match(workflow, /claude-companion\.mjs plan --check -/);
+  assert.doesNotMatch(workflow, /^\s*-\s*run:\s*claude\b/m);
+  assert.doesNotMatch(workflow, /^\s*claude\s+/m);
+});
+
 test("setup reports missing Claude CLI without installing", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-plugin-test-"));
   const result = runNode(["setup"], {

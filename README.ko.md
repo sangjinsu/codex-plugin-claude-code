@@ -131,6 +131,12 @@ claude:skills --scope all --query "production-grade frontend"
 
 text 출력은 읽기 쉽게 긴 description을 줄입니다. 전체 description과 path가 필요하면 `--format json`을 사용합니다.
 
+## CI
+
+GitHub Actions는 로컬 `claude` CLI, Claude 인증, Anthropic API credential이 없어도 실행되는 오프라인 검증을 수행합니다.
+
+workflow는 lint, test와 함께 skill 조회, skill 추천, dry-run prompt 렌더링, plan 검증처럼 Claude를 호출하지 않는 command를 smoke test로 확인합니다.
+
 ## 문제 해결
 
 - setup은 통과하지만 `claude:plan`이 실패하면 `claude:doctor`를 실행합니다.

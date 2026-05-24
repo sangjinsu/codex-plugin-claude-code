@@ -131,6 +131,12 @@ Scope options:
 
 Text output shortens long descriptions for readability. Use `--format json` when you need the full description and path.
 
+## CI
+
+GitHub Actions runs offline checks that do not require the local `claude` CLI, Claude authentication, or Anthropic API credentials.
+
+The workflow runs lint, tests, and smoke checks for Claude-free commands such as skill listing, skill recommendation, dry-run prompt rendering, and plan validation.
+
 ## Troubleshooting
 
 - Run `claude:doctor` when setup looks correct but `claude:plan` fails.
