@@ -91,12 +91,17 @@ claude:plan --list-skills --query plan
 claude:plan --list-skills --query "implementation plan"
 claude:plan --recommend-skills frontend polish
 claude:plan --dry-run --show-skills add frontend validation
+claude:plan --model claude-sonnet-4-5 --timeout 240000 --max-files 120 add validation
+claude:plan --output PLAN.md add validation
+claude:plan --check PLAN.md
 claude:plan --show-skills add frontend validation
 claude:plan --skill superpowers:writing-plans add release checklist
 claude:plan --skills frontend-design,global-review add UI validation plan
 ```
 
 `--recommend-skills` and `--dry-run` do not call Claude. They are useful for choosing skills and checking what context will be sent before a real plan run.
+
+`--output` and `--save` are opt-in only. Saved plans include request metadata and selected skills. `--check` validates a plan for required sections, destructive commands, missing npm scripts, and missing referenced paths.
 
 Claude is expected to return these sections:
 
@@ -105,6 +110,7 @@ Claude is expected to return these sections:
 - `Plan`
 - `Validation`
 - `Risks`
+- `Implementation Checklist`
 
 ## claude:skills
 
@@ -154,10 +160,20 @@ Values that must never be output:
 - Claude authentication credentials
 - Codex authentication credentials
 
+## Versioning and Releases
+
+This project uses SemVer tags and GitHub Releases.
+
+- Keep `package.json`, `.codex-plugin/plugin.json`, and the Git tag aligned.
+- Use `vMAJOR.MINOR.PATCH` tag names, such as `v0.1.0`.
+- Publish release notes through GitHub Releases.
+- Release assets are not required; the plugin source repository is the distribution unit.
+
 ## Development
 
 ```bash
 npm run lint
 npm test
 node plugins/claude/scripts/claude-companion.mjs --help
+node plugins/claude/scripts/claude-companion.mjs plan --help
 ```

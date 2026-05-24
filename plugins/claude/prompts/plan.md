@@ -39,3 +39,9 @@ Validation
 Risks
 
 - Important side effects, edge cases, or uncertainties.
+
+Implementation Checklist
+
+- Concise Codex-facing checklist.
+- Likely files to touch.
+- Validation commands to run.

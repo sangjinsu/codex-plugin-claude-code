@@ -11,7 +11,16 @@ const EXIT_CLAUDE_MISSING = 2;
 const EXIT_CLAUDE_AUTH = 3;
 const EXIT_PLAN_FAILED = 4;
 const DEFAULT_PLAN_TIMEOUT_MS = 180_000;
+const DEFAULT_CONTEXT_FILE_LIMIT = 200;
 const SKILL_DESCRIPTION_PREVIEW_LENGTH = 100;
+const REQUIRED_PLAN_SECTIONS = ["Summary", "Current Understanding", "Plan", "Validation", "Risks"];
+const DESTRUCTIVE_COMMAND_PATTERNS = [
+  { label: "rm -rf", pattern: /\brm\s+-rf\b/i },
+  { label: "git reset --hard", pattern: /\bgit\s+reset\s+--hard\b/i },
+  { label: "git push --force", pattern: /\bgit\s+push\s+(?:--force|-f)\b/i },
+  { label: "DROP TABLE", pattern: /\bDROP\s+TABLE\b/i },
+  { label: "kubectl delete", pattern: /\bkubectl\s+delete\b/i }
+];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,7 +92,9 @@ Usage:
   node plugins/claude/scripts/claude-companion.mjs plan "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --list-skills [--query <text>]
   node plugins/claude/scripts/claude-companion.mjs plan --recommend-skills "<request>"
+  node plugins/claude/scripts/claude-companion.mjs plan --check <plan-file|->
   node plugins/claude/scripts/claude-companion.mjs plan --dry-run [--show-skills] "<request>"
+  node plugins/claude/scripts/claude-companion.mjs plan --output PLAN.md "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --skill <id> "<request>"
   printf '<request>' | node plugins/claude/scripts/claude-companion.mjs plan
 
@@ -249,14 +260,22 @@ function handlePlan(args) {
   node plugins/claude/scripts/claude-companion.mjs plan "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --list-skills [--query <text>]
   node plugins/claude/scripts/claude-companion.mjs plan --recommend-skills "<request>"
+  node plugins/claude/scripts/claude-companion.mjs plan --check <plan-file|->
   node plugins/claude/scripts/claude-companion.mjs plan --dry-run [--show-skills] "<request>"
+  node plugins/claude/scripts/claude-companion.mjs plan --output PLAN.md "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --show-skills [--skill <id>] "<request>"
   printf '<request>' | node plugins/claude/scripts/claude-companion.mjs plan
 
 Options:
   --list-skills              List skills without running a plan
   --recommend-skills         Recommend skills for the request without running Claude
+  --check <plan-file|->      Validate a Claude plan against the current repo
   --dry-run                  Print the prompt/context without running Claude
+  --output <file>            Save the plan with metadata to a file
+  --save                     Save the plan to PLAN.md
+  --model <name>             Pass a Claude model name to the CLI
+  --timeout <ms>             Override the Claude plan timeout
+  --max-files <n>            Limit visible files included in the prompt
   --show-skills              Include matching skill candidates in the Claude prompt
   --skill <id>               Require one skill
   --skills <id,id>           Require multiple skills
@@ -281,6 +300,10 @@ Options:
     });
     printSkills(skills, planOptions.format);
     return 0;
+  }
+
+  if (planOptions.checkPath !== null) {
+    return handlePlanCheck(planOptions.checkPath);
   }
 
   if (planOptions.recommendSkills) {
@@ -315,7 +338,7 @@ Options:
   const prompt = buildPlanPrompt({
     template: fs.readFileSync(promptPath, "utf8"),
     request,
-    workspace: collectWorkspaceContext(process.cwd()),
+    workspace: collectWorkspaceContext(process.cwd(), planOptions.maxFiles),
     skillContext: buildSkillContext({
       request,
       showSkills: planOptions.showSkills,
@@ -326,7 +349,7 @@ Options:
   });
 
   if (planOptions.dryRun) {
-    printPlanDryRun(prompt);
+    printPlanDryRun(prompt, planOptions);
     return 0;
   }
 
@@ -337,31 +360,25 @@ Options:
   }
 
   const timeout = getPlanTimeoutMs();
+  const effectiveTimeout = planOptions.timeout || timeout;
+  const claudeArgs = buildClaudePlanArgs(prompt, planOptions);
   const result = runCommand(
     "claude",
-    [
-      "-p",
-      prompt,
-      "--output-format",
-      "text",
-      "--no-session-persistence",
-      "--tools",
-      "Read,Glob,Grep,LS"
-    ],
+    claudeArgs,
     {
       cwd: process.cwd(),
       maxBuffer: 20 * 1024 * 1024,
-      timeout
+      timeout: effectiveTimeout
     }
   );
 
   if (result.error) {
-    printError(formatClaudeFailure(result, { action: "plan", timeout }));
+    printError(formatClaudeFailure(result, { action: "plan", timeout: effectiveTimeout }));
     return EXIT_PLAN_FAILED;
   }
 
   if (result.status !== 0) {
-    printError(formatClaudeFailure(result, { action: "plan", timeout }));
+    printError(formatClaudeFailure(result, { action: "plan", timeout: effectiveTimeout }));
     return EXIT_PLAN_FAILED;
   }
 
@@ -373,6 +390,20 @@ Options:
 
   if (output) {
     console.log(output);
+  }
+  if (planOptions.outputPath) {
+    const savePath = path.resolve(process.cwd(), planOptions.outputPath);
+    fs.mkdirSync(path.dirname(savePath), { recursive: true });
+    fs.writeFileSync(
+      savePath,
+      formatSavedPlan({
+        request,
+        output,
+        explicitSkills: uniqueValues(planOptions.explicitSkills)
+      }),
+      "utf8"
+    );
+    console.log(`Plan saved: ${savePath}`);
   }
   return 0;
 }
@@ -425,6 +456,7 @@ function parseSkillListArgs(args) {
 
 function parsePlanArgs(args) {
   const options = {
+    checkPath: null,
     requestArgs: [],
     explicitSkills: [],
     dryRun: false,
@@ -434,6 +466,10 @@ function parsePlanArgs(args) {
     scope: "all",
     query: "",
     format: "text",
+    maxFiles: DEFAULT_CONTEXT_FILE_LIMIT,
+    model: "",
+    outputPath: "",
+    timeout: 0,
     error: ""
   };
 
@@ -443,8 +479,30 @@ function parsePlanArgs(args) {
       options.listSkills = true;
     } else if (arg === "--recommend-skills") {
       options.recommendSkills = true;
+    } else if (arg === "--check") {
+      options.checkPath = args[++index] || "";
+    } else if (arg.startsWith("--check=")) {
+      options.checkPath = arg.slice("--check=".length);
     } else if (arg === "--dry-run") {
       options.dryRun = true;
+    } else if (arg === "--output") {
+      options.outputPath = args[++index] || "";
+    } else if (arg.startsWith("--output=")) {
+      options.outputPath = arg.slice("--output=".length);
+    } else if (arg === "--save") {
+      options.outputPath = "PLAN.md";
+    } else if (arg === "--model") {
+      options.model = args[++index] || "";
+    } else if (arg.startsWith("--model=")) {
+      options.model = arg.slice("--model=".length);
+    } else if (arg === "--timeout") {
+      options.timeout = parsePositiveIntegerOption(args[++index] || "", "--timeout");
+    } else if (arg.startsWith("--timeout=")) {
+      options.timeout = parsePositiveIntegerOption(arg.slice("--timeout=".length), "--timeout");
+    } else if (arg === "--max-files") {
+      options.maxFiles = parsePositiveIntegerOption(args[++index] || "", "--max-files");
+    } else if (arg.startsWith("--max-files=")) {
+      options.maxFiles = parsePositiveIntegerOption(arg.slice("--max-files=".length), "--max-files");
     } else if (arg === "--show-skills") {
       options.showSkills = true;
     } else if (arg === "--skill") {
@@ -478,8 +536,29 @@ function parsePlanArgs(args) {
   if (!["text", "json"].includes(options.format)) {
     options.error = "Invalid --format. Use text or json.";
   }
+  if (options.checkPath === "") {
+    options.error = "Missing --check value. Use a plan file path or - for stdin.";
+  }
+  if (options.outputPath === "") {
+    // Keep empty string as the disabled state unless --output consumed a missing value.
+    const hasOutputFlag = args.some((arg) => arg === "--output" || arg.startsWith("--output="));
+    if (hasOutputFlag) {
+      options.error = "Missing --output value.";
+    }
+  }
+  if (options.timeout === null || options.maxFiles === null) {
+    options.error = "Numeric options must be positive integers.";
+  }
 
   return options;
+}
+
+function parsePositiveIntegerOption(value, optionName) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
 }
 
 function addExplicitSkills(options, rawValue) {
@@ -512,6 +591,35 @@ function printRecommendedSkills({ cwd, home, scope, text }) {
   if (candidates.length > 1) {
     const ids = candidates.slice(0, 3).map((skill) => skill.id).join(",");
     console.log(`claude:plan --skills ${ids} ${text}`);
+  }
+}
+
+function handlePlanCheck(checkPath) {
+  const planText = readPlanCheckInput(checkPath);
+  if (planText.error) {
+    printError(planText.error);
+    return EXIT_USAGE;
+  }
+
+  const report = checkPlanText(planText.content, process.cwd());
+  printPlanCheckReport(report);
+  return report.errors.length > 0 ? EXIT_PLAN_FAILED : 0;
+}
+
+function readPlanCheckInput(checkPath) {
+  if (checkPath === "-") {
+    try {
+      return { content: fs.readFileSync(0, "utf8") };
+    } catch (error) {
+      return { error: `Failed to read plan from stdin: ${error.message}` };
+    }
+  }
+
+  const absolutePath = path.resolve(process.cwd(), checkPath);
+  try {
+    return { content: fs.readFileSync(absolutePath, "utf8") };
+  } catch (error) {
+    return { error: `Failed to read plan file: ${error.message}` };
   }
 }
 
@@ -552,13 +660,46 @@ ${workspace.files || "(no files found)"}
 `;
 }
 
-function printPlanDryRun(prompt) {
+function buildClaudePlanArgs(prompt, options) {
+  const args = [
+    "-p",
+    prompt,
+    "--output-format",
+    "text",
+    "--no-session-persistence",
+    "--tools",
+    "Read,Glob,Grep,LS"
+  ];
+  if (options.model) {
+    args.push("--model", options.model);
+  }
+  return args;
+}
+
+function formatSavedPlan({ request, output, explicitSkills }) {
+  const skills = explicitSkills.length > 0 ? explicitSkills.join(", ") : "(none)";
+  return `<!-- Generated by claude:plan -->
+
+Generated: ${new Date().toISOString()}
+Request: ${request}
+Skills: ${skills}
+
+---
+
+${output.trimEnd()}
+`;
+}
+
+function printPlanDryRun(prompt, options = {}) {
+  const previewArgs = buildClaudePlanArgs(prompt, options)
+    .map((arg) => (arg === prompt ? "<prompt>" : arg))
+    .join(" ");
   console.log(`Claude plan dry run
 
 No Claude CLI call was made.
 
 Command preview:
-claude -p <prompt> --output-format text --no-session-persistence --tools Read,Glob,Grep,LS
+claude ${previewArgs}
 
 Prompt:
 ${prompt}`);
@@ -929,6 +1070,119 @@ function supportSkillPenalty(skill, terms) {
   return isSupportIntent ? 0 : 40;
 }
 
+function checkPlanText(planText, cwd) {
+  const errors = [];
+  const warnings = [];
+  const missingSections = REQUIRED_PLAN_SECTIONS.filter(
+    (section) => !new RegExp(`^${escapeRegExp(section)}\\s*$`, "im").test(planText)
+  );
+  if (missingSections.length > 0) {
+    errors.push(`Missing required sections: ${missingSections.join(", ")}`);
+  }
+
+  for (const command of DESTRUCTIVE_COMMAND_PATTERNS) {
+    if (command.pattern.test(planText)) {
+      errors.push(`Destructive command detected: ${command.label}`);
+    }
+  }
+
+  for (const script of findMentionedNpmScripts(planText)) {
+    if (!npmScriptExists(cwd, script)) {
+      errors.push(`Unknown npm script: ${script}`);
+    }
+  }
+
+  for (const referencedPath of findReferencedPaths(planText)) {
+    if (!fs.existsSync(path.resolve(cwd, referencedPath))) {
+      errors.push(`Referenced path does not exist: ${referencedPath}`);
+    }
+  }
+
+  if (!/Implementation Checklist/im.test(planText)) {
+    warnings.push("Implementation Checklist section is recommended for Codex handoff.");
+  }
+
+  return { errors: uniqueValues(errors), warnings: uniqueValues(warnings) };
+}
+
+function printPlanCheckReport(report) {
+  console.log("Claude plan check");
+  console.log("");
+  if (report.errors.length === 0 && report.warnings.length === 0) {
+    console.log("Result: ok");
+    return;
+  }
+
+  console.log(`Result: ${report.errors.length > 0 ? "failed" : "ok with warnings"}`);
+  if (report.errors.length > 0) {
+    console.log("");
+    console.log("Errors:");
+    for (const error of report.errors) {
+      console.log(`- ${error}`);
+    }
+  }
+  if (report.warnings.length > 0) {
+    console.log("");
+    console.log("Warnings:");
+    for (const warning of report.warnings) {
+      console.log(`- ${warning}`);
+    }
+  }
+}
+
+function findMentionedNpmScripts(text) {
+  const scripts = [];
+  const pattern = /\bnpm\s+run\s+([A-Za-z0-9:_-]+)/g;
+  let match = pattern.exec(text);
+  while (match) {
+    scripts.push(match[1]);
+    match = pattern.exec(text);
+  }
+  return uniqueValues(scripts);
+}
+
+function npmScriptExists(cwd, scriptName) {
+  const packageJsonPath = path.join(cwd, "package.json");
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    return Boolean(packageJson.scripts && Object.hasOwn(packageJson.scripts, scriptName));
+  } catch {
+    return false;
+  }
+}
+
+function findReferencedPaths(text) {
+  const paths = [];
+  const codePattern = /`([^`\n]+)`/g;
+  let match = codePattern.exec(text);
+  while (match) {
+    const candidate = match[1].trim();
+    if (isLikelyRepoPath(candidate)) {
+      paths.push(stripPathPunctuation(candidate));
+    }
+    match = codePattern.exec(text);
+  }
+  return uniqueValues(paths);
+}
+
+function isLikelyRepoPath(candidate) {
+  if (!candidate || candidate.includes("*") || candidate.startsWith("http")) {
+    return false;
+  }
+  if (/^(npm|node|git|claude|codex)\b/.test(candidate)) {
+    return false;
+  }
+  return candidate.includes("/") || /\.[A-Za-z0-9]+$/.test(candidate);
+}
+
+function stripPathPunctuation(candidate) {
+  return candidate.replace(/[.,;:]+$/g, "");
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function getHomeDirectory() {
   return process.env.HOME || os.homedir();
 }
@@ -1132,11 +1386,11 @@ function checkRequiredFiles() {
   }));
 }
 
-function collectWorkspaceContext(cwd) {
+function collectWorkspaceContext(cwd, maxFiles = DEFAULT_CONTEXT_FILE_LIMIT) {
   return {
     cwd,
     gitStatus: getGitStatus(cwd),
-    files: getVisibleFiles(cwd).join(os.EOL)
+    files: getVisibleFiles(cwd, maxFiles).join(os.EOL)
   };
 }
 
@@ -1153,7 +1407,7 @@ function getGitStatus(cwd) {
   return redactSecrets(result.stdout.trim());
 }
 
-function getVisibleFiles(cwd) {
+function getVisibleFiles(cwd, maxFiles = DEFAULT_CONTEXT_FILE_LIMIT) {
   const gitFiles = runCommand(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard"],
@@ -1169,11 +1423,11 @@ function getVisibleFiles(cwd) {
       .sort();
 
     if (files.length > 0) {
-      return files.slice(0, 200);
+      return files.slice(0, maxFiles);
     }
   }
 
-  return walkFiles(cwd, cwd, 200);
+  return walkFiles(cwd, cwd, maxFiles);
 }
 
 function walkFiles(root, current, limit, output = []) {

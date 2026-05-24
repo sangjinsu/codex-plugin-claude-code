@@ -91,12 +91,17 @@ claude:plan --list-skills --query plan
 claude:plan --list-skills --query "implementation plan"
 claude:plan --recommend-skills frontend polish
 claude:plan --dry-run --show-skills add frontend validation
+claude:plan --model claude-sonnet-4-5 --timeout 240000 --max-files 120 add validation
+claude:plan --output PLAN.md add validation
+claude:plan --check PLAN.md
 claude:plan --show-skills add frontend validation
 claude:plan --skill superpowers:writing-plans add release checklist
 claude:plan --skills frontend-design,global-review add UI validation plan
 ```
 
 `--recommend-skills`와 `--dry-run`은 Claude를 호출하지 않습니다. 실제 계획 실행 전에 skill을 고르거나 Claude에 전달될 context를 확인할 때 사용합니다.
+
+`--output`과 `--save`는 명시적으로 요청한 경우에만 계획을 저장합니다. 저장된 계획에는 요청 metadata와 선택한 skill이 포함됩니다. `--check`는 필수 섹션, destructive command, 없는 npm script, 존재하지 않는 참조 path를 검사합니다.
 
 Claude는 다음 섹션을 반환해야 합니다.
 
@@ -105,6 +110,7 @@ Claude는 다음 섹션을 반환해야 합니다.
 - `Plan`
 - `Validation`
 - `Risks`
+- `Implementation Checklist`
 
 ## claude:skills
 
@@ -154,10 +160,20 @@ text 출력은 읽기 쉽게 긴 description을 줄입니다. 전체 description
 - Claude 인증 정보
 - Codex 인증 정보
 
+## 버전과 릴리즈
+
+이 프로젝트는 SemVer tag와 GitHub Release를 함께 사용합니다.
+
+- `package.json`, `.codex-plugin/plugin.json`, Git tag의 버전을 맞춥니다.
+- tag 이름은 `v0.1.0`처럼 `vMAJOR.MINOR.PATCH` 형식을 사용합니다.
+- 릴리즈 노트는 GitHub Releases에 작성합니다.
+- 별도 release asset은 필요하지 않습니다. 플러그인 source repository 자체가 배포 단위입니다.
+
 ## 개발
 
 ```bash
 npm run lint
 npm test
 node plugins/claude/scripts/claude-companion.mjs --help
+node plugins/claude/scripts/claude-companion.mjs plan --help
 ```
