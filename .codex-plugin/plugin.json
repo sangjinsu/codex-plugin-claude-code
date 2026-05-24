@@ -25,6 +25,7 @@
     ],
     "defaultPrompt": [
       "claude:setup",
+      "claude:skills --query frontend",
       "claude:plan add a small feature"
     ],
     "brandColor": "#8B5CF6",

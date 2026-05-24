@@ -1,25 +1,33 @@
+**English** | [한국어](README.ko.md)
+
 # Codex Plugin Claude Code
 
-Codex에서 로컬 Claude Code CLI를 호출해 구현 계획을 받는 MVP 플러그인입니다.
+Codex Plugin Claude Code is a minimal Codex plugin that asks the local Claude Code CLI to create read-only implementation plans.
 
-이 플러그인은 `codex-plugin-cc`의 반대 방향을 목표로 합니다.
+This plugin takes the opposite approach of `codex-plugin-cc`:
 
-- `codex-plugin-cc`: Claude Code에서 Codex 호출
-- 이 플러그인: Codex에서 Claude Code 호출
+- `codex-plugin-cc`: Call Codex from Claude Code
+- This plugin: Call Claude Code from Codex
 
-MVP에서는 `claude:setup`, `claude:plan`만 제공합니다. Claude는 계획을 세우고, Codex는 그 계획을 검증한 뒤 구현합니다.
+The intended workflow is simple: Claude plans, Codex validates the plan against the repository state, then Codex implements the change.
 
-## 설치
+## Features
 
-이 저장소 자체가 Codex plugin root입니다. 로컬 플러그인으로 사용할 때는 이 디렉터리를 Codex plugin source로 등록합니다.
+- `claude:setup`: Check whether the local Claude Code CLI and plugin files are ready.
+- `claude:plan`: Ask Claude for a read-only implementation plan.
+- `claude:skills`: List local and global Claude Code skills that can be referenced by planning.
 
-필수 조건:
+## Installation
 
-- Node.js 20 이상
-- 로컬 `claude` CLI
-- Claude Code 인증 상태
+This repository is the Codex plugin root. To use it as a local plugin, register this directory as a Codex plugin source.
 
-Claude CLI는 자동 설치하지 않습니다. 설치와 인증은 사용자가 직접 수행합니다.
+Prerequisites:
+
+- Node.js 20+
+- Local `claude` CLI
+- Authenticated Claude Code session
+
+The plugin does not install Claude automatically. Install and authenticate Claude Code separately, then verify access:
 
 ```bash
 claude auth status
@@ -27,65 +35,104 @@ claude auth status
 
 ## claude:setup
 
-Claude CLI와 플러그인 파일 구조를 확인합니다.
+Checks Claude CLI availability, authentication state, project status, and required plugin files.
 
 ```text
 claude:setup
 ```
 
-내부적으로 다음 스크립트를 실행합니다.
+Internally runs the following script:
 
 ```bash
 node plugins/claude/scripts/claude-companion.mjs setup
 ```
 
-확인 항목:
+Checks performed:
 
-- `claude` CLI 설치 여부
-- `claude --version` 실행 가능 여부
-- `claude auth status` 인증 상태
-- 현재 디렉터리가 프로젝트인지 여부
-- MVP에 필요한 plugin 파일 존재 여부
+- `claude` CLI is installed and executable
+- `claude --version` runs successfully
+- `claude auth status` reports an authenticated session
+- The current directory looks like a project
+- Required plugin files exist
 
 ## claude:plan
 
-Claude에게 Codex `/plan`처럼 읽기 전용 구현 계획을 요청합니다.
+Requests a read-only implementation plan from Claude, similar to Codex `/plan`.
 
 ```text
 claude:plan add README usage examples
 ```
 
-내부적으로 다음 스크립트를 실행합니다.
+Internally runs the following script:
 
 ```bash
 node plugins/claude/scripts/claude-companion.mjs plan "add README usage examples"
 ```
 
-`claude:plan`은 기본적으로 `PLAN.md`를 생성하지 않고 stdout으로만 계획을 반환합니다. Claude CLI 호출은 `Read`, `Glob`, `Grep`, `LS` 도구만 허용해 읽기 전용 계획 수립에 맞춥니다.
+By default, `claude:plan` does not create `PLAN.md`. It returns the plan through stdout only.
 
-## 제한 사항
+The Claude CLI call is restricted to `Read`, `Glob`, `Grep`, and `LS` tools so Claude can inspect context but cannot edit files.
 
-- Anthropic API를 직접 호출하지 않습니다.
-- MCP를 사용하지 않습니다.
-- background job을 만들지 않습니다.
-- review, status, result, cancel 기능은 아직 없습니다.
-- Claude가 반환한 계획은 참고용입니다. Codex가 저장소 상태와 비교해 검증한 뒤 구현해야 합니다.
+Skills can also be used with the plan command:
 
-## 보안
+```text
+claude:plan --list-skills --query plan
+claude:plan --list-skills --query "implementation plan"
+claude:plan --show-skills add frontend validation
+claude:plan --skill superpowers:writing-plans add release checklist
+claude:plan --skills frontend-design,global-review add UI validation plan
+```
 
-스크립트는 `.env` 값을 읽거나 출력하지 않습니다. 또한 Claude 출력에 명백한 API key, token, private key 패턴이 포함되면 `[REDACTED]`로 마스킹합니다.
+Claude is expected to return these sections:
 
-절대 출력하면 안 되는 값:
+- `Summary`
+- `Current Understanding`
+- `Plan`
+- `Validation`
+- `Risks`
 
-- API key
-- token
-- cookie
-- SSH key
-- `.env` 값
-- Claude 인증 정보
-- Codex 인증 정보
+## claude:skills
 
-## 개발
+Lists local and global Claude Code skills.
+
+```text
+claude:skills --scope all --query frontend
+claude:skills --scope all --query "production-grade frontend"
+```
+
+Scope options:
+
+- `local`: The current project's `skills/`, `.claude/skills/`, and `.claude/plugins/`
+- `global`: `~/.claude/skills/`, `~/.claude/plugins/cache/`, `~/.agents/skills/`
+- `all`: Both local and global skills
+
+`--query` searches across skill id, name, description, and path, so you can find skills by description keywords without knowing the exact skill name.
+
+Text output shortens long descriptions for readability. Use `--format json` when you need the full description and path.
+
+## Limitations
+
+- Does not call the Anthropic API directly.
+- Does not use MCP.
+- Does not create background jobs.
+- Does not provide review, status, result, or cancel workflows yet.
+- Plans returned by Claude are for reference only. Codex should validate them against the repository state before implementing.
+
+## Security
+
+Scripts do not read or output `.env` values. If Claude output contains obvious API key, token, or private key patterns, those values are masked as `[REDACTED]`.
+
+Values that must never be output:
+
+- API keys
+- Tokens
+- Cookies
+- SSH keys
+- `.env` values
+- Claude authentication credentials
+- Codex authentication credentials
+
+## Development
 
 ```bash
 npm run lint
