@@ -16,8 +16,19 @@ test("--help prints usage", () => {
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Usage:/);
+  assert.match(result.stdout, /doctor/);
   assert.match(result.stdout, /setup/);
   assert.match(result.stdout, /plan/);
+});
+
+test("plan --help lists skill recommendation and dry-run options", () => {
+  const result = runNode(["plan", "--help"]);
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--recommend-skills/);
+  assert.match(result.stdout, /--dry-run/);
+  assert.match(result.stdout, /--show-skills/);
+  assert.match(result.stdout, /--format text\|json/);
 });
 
 test("setup reports missing Claude CLI without installing", () => {
@@ -63,6 +74,75 @@ esac`
   assert.match(result.stdout, /Claude CLI: available/);
   assert.match(result.stdout, /Claude auth: authenticated/);
   assert.match(result.stdout, /Ready/);
+});
+
+test("doctor reports ready when Claude auth and prompt smoke pass", () => {
+  const fake = createFakeClaude({
+    body: `case "$1" in
+  --version)
+    echo "claude 9.9.9"
+    ;;
+  auth)
+    echo '{"loggedIn":true,"account":"test@example.com"}'
+    ;;
+  -p)
+    echo "OK"
+    ;;
+  *)
+    echo "unexpected args: $*" >&2
+    exit 9
+    ;;
+esac`
+  });
+
+  const result = runNode(["doctor"], {
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Claude doctor/);
+  assert.match(result.stdout, /Node.js: ok/);
+  assert.match(result.stdout, /Claude CLI: available/);
+  assert.match(result.stdout, /Claude auth: authenticated/);
+  assert.match(result.stdout, /Claude prompt smoke: ok/);
+});
+
+test("doctor reports Claude prompt smoke auth failures with login guidance", () => {
+  const fake = createFakeClaude({
+    body: `case "$1" in
+  --version)
+    echo "claude 9.9.9"
+    ;;
+  auth)
+    echo '{"loggedIn":true,"account":"test@example.com"}'
+    ;;
+  -p)
+    echo "401 Invalid authentication credentials" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected args: $*" >&2
+    exit 9
+    ;;
+esac`
+  });
+
+  const result = runNode(["doctor"], {
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 4);
+  assert.match(result.stdout, /Claude prompt smoke: failed/);
+  assert.match(result.stdout, /Claude authentication failed while planning/);
+  assert.match(result.stdout, /claude auth login/);
 });
 
 test("plan sends a read-only planning prompt to Claude", () => {
@@ -180,6 +260,85 @@ exit 9`
   assert.equal(result.status, 0);
   assert.match(result.stdout, /ANTHROPIC_API_KEY=\[REDACTED\]/);
   assert.doesNotMatch(result.stdout, /sk-ant-secretvalue123456/);
+});
+
+test("plan explains Claude 401 authentication failures", () => {
+  const fake = createFakeClaude({
+    body: `if [ "$1" = "--version" ]; then
+  echo "claude 9.9.9"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  echo "401 Invalid authentication credentials" >&2
+  exit 1
+fi
+exit 9`
+  });
+
+  const result = runNode(["plan", "Check setup"], {
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 4);
+  assert.match(result.stderr, /Claude authentication failed while planning/);
+  assert.match(result.stderr, /claude auth login/);
+});
+
+test("plan explains Claude usage credit failures", () => {
+  const fake = createFakeClaude({
+    body: `if [ "$1" = "--version" ]; then
+  echo "claude 9.9.9"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  echo "API Error: Usage credits required for 1M context" >&2
+  exit 1
+fi
+exit 9`
+  });
+
+  const result = runNode(["plan", "Check setup"], {
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 4);
+  assert.match(result.stderr, /Claude usage credits are required/);
+  assert.match(result.stderr, /claude\.ai\/settings\/usage/);
+});
+
+test("plan reports timeout failures with retry guidance", () => {
+  const fake = createFakeClaude({
+    body: `if [ "$1" = "--version" ]; then
+  echo "claude 9.9.9"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  sleep 2
+  exit 0
+fi
+exit 9`
+  });
+
+  const result = runNode(["plan", "Check setup"], {
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot,
+      CLAUDE_PLUGIN_PLAN_TIMEOUT_MS: "1"
+    }
+  });
+
+  assert.equal(result.status, 4);
+  assert.match(result.stderr, /Claude plan timed out/);
+  assert.match(result.stderr, /Try a narrower request/);
 });
 
 test("skills lists local, global, and plugin cache skills as json", () => {
@@ -353,6 +512,89 @@ test("plan --list-skills filters by description text without calling Claude", ()
   assert.equal(result.status, 0);
   const skills = JSON.parse(result.stdout);
   assert.deepEqual(skills.map((skill) => skill.id), ["global-review"]);
+});
+
+test("plan --recommend-skills lists candidate usage without calling Claude", () => {
+  const fixture = createSkillFixture();
+  const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), "empty-path-"));
+
+  const result = runNode(["plan", "--recommend-skills", "frontend", "polish"], {
+    cwd: fixture.workspace,
+    env: {
+      ...process.env,
+      HOME: fixture.home,
+      PATH: emptyPath,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Recommended Claude skills/);
+  assert.match(result.stdout, /make-interfaces-feel-better/);
+  assert.match(result.stdout, /claude:plan --skill make-interfaces-feel-better frontend polish/);
+});
+
+test("plan --recommend-skills prioritizes planning skills over support commands", () => {
+  const fixture = createSkillFixture();
+  const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), "empty-path-"));
+  writeSkill(
+    path.join(fixture.workspace, "skills/doctor/SKILL.md"),
+    "doctor",
+    "Use when claude:plan is failing and setup diagnostics are needed"
+  );
+  writeSkill(
+    path.join(fixture.workspace, "skills/skills/SKILL.md"),
+    "skills",
+    "Use when listing Claude skills available to claude:plan"
+  );
+  writeSkill(
+    path.join(fixture.home, ".agents/skills/writing-plans/SKILL.md"),
+    "writing-plans",
+    "Use when creating implementation plans, breaking work into steps, and preparing validation"
+  );
+  writeSkill(
+    path.join(fixture.home, ".agents/skills/executing-plans/SKILL.md"),
+    "executing-plans",
+    "Use when you have a written implementation plan to execute in a separate session"
+  );
+
+  const result = runNode(["plan", "--recommend-skills", "plan", "짤때", "쓸", "수", "있는", "것"], {
+    cwd: fixture.workspace,
+    env: {
+      ...process.env,
+      HOME: fixture.home,
+      PATH: emptyPath,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  const lines = result.stdout.split(/\r?\n/).filter((line) => line.startsWith("- "));
+  assert.match(lines[0], /writing-plans/);
+  assert.doesNotMatch(result.stdout, /- doctor /);
+  assert.doesNotMatch(result.stdout, /- skills /);
+});
+
+test("plan --dry-run prints prompt without calling Claude", () => {
+  const fixture = createSkillFixture();
+  const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), "empty-path-"));
+
+  const result = runNode(["plan", "--dry-run", "--show-skills", "Need frontend planning"], {
+    cwd: fixture.workspace,
+    env: {
+      ...process.env,
+      HOME: fixture.home,
+      PATH: emptyPath,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Claude plan dry run/);
+  assert.match(result.stdout, /No Claude CLI call was made/);
+  assert.match(result.stdout, /Available Claude skills/);
+  assert.match(result.stdout, /User request:/);
+  assert.match(result.stdout, /Need frontend planning/);
 });
 
 test("plan --show-skills includes candidate skills in the Claude prompt", () => {

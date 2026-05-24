@@ -10,6 +10,7 @@ const EXIT_USAGE = 1;
 const EXIT_CLAUDE_MISSING = 2;
 const EXIT_CLAUDE_AUTH = 3;
 const EXIT_PLAN_FAILED = 4;
+const DEFAULT_PLAN_TIMEOUT_MS = 180_000;
 const SKILL_DESCRIPTION_PREVIEW_LENGTH = 100;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,6 +24,7 @@ const PLUGIN_ROOT = path.resolve(
 
 const REQUIRED_FILES = [
   ".codex-plugin/plugin.json",
+  "skills/doctor/SKILL.md",
   "skills/setup/SKILL.md",
   "skills/plan/SKILL.md",
   "skills/skills/SKILL.md",
@@ -50,6 +52,10 @@ function main() {
     process.exit(0);
   }
 
+  if (command === "doctor") {
+    process.exit(handleDoctor());
+  }
+
   if (command === "setup") {
     process.exit(handleSetup());
   }
@@ -71,18 +77,88 @@ function printHelp() {
   console.log(`Claude companion for the Codex Claude plugin.
 
 Usage:
+  node plugins/claude/scripts/claude-companion.mjs doctor
   node plugins/claude/scripts/claude-companion.mjs setup
   node plugins/claude/scripts/claude-companion.mjs skills [--scope all|local|global] [--query <text>] [--format text|json]
   node plugins/claude/scripts/claude-companion.mjs plan "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --list-skills [--query <text>]
+  node plugins/claude/scripts/claude-companion.mjs plan --recommend-skills "<request>"
+  node plugins/claude/scripts/claude-companion.mjs plan --dry-run [--show-skills] "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --skill <id> "<request>"
   printf '<request>' | node plugins/claude/scripts/claude-companion.mjs plan
 
 Commands:
+  doctor  Diagnose Claude CLI, auth, prompt execution, project, and plugin files.
   setup   Check Claude CLI, auth status, project status, and plugin files.
   skills  List local and global Claude skills visible from this machine.
   plan    Ask Claude Code CLI for a read-only implementation plan.
 `);
+}
+
+function handleDoctor() {
+  const lines = ["Claude doctor", ""];
+  const node = checkNodeRuntime();
+  lines.push(`Node.js: ${node.ok ? "ok" : "unsupported"} (${node.detail})`);
+
+  const claude = checkClaudeCli();
+  lines.push(`Claude CLI: ${claude.available ? "available" : "missing"} (${claude.detail})`);
+
+  let auth = { ok: false, label: "skipped", detail: "Claude CLI is unavailable" };
+  if (claude.available) {
+    auth = checkClaudeAuth();
+  }
+  lines.push(`Claude auth: ${auth.label}${auth.detail ? ` (${auth.detail})` : ""}`);
+
+  const project = checkProject(process.cwd());
+  lines.push(`Project: ${project.ok ? "ok" : "not detected"} (${project.detail})`);
+
+  const files = checkRequiredFiles();
+  const missingFiles = files.filter((file) => !file.exists);
+  lines.push(`Plugin files: ${missingFiles.length === 0 ? "ok" : "missing files"}`);
+  for (const file of missingFiles) {
+    lines.push(`  missing ${file.path}`);
+  }
+
+  const skills = discoverSkills({
+    cwd: process.cwd(),
+    home: getHomeDirectory(),
+    scope: "all",
+    query: ""
+  });
+  lines.push(`Claude skills: ${skills.length} discovered`);
+
+  let smoke = { ok: false, skipped: true, detail: "Claude CLI or auth is unavailable" };
+  if (claude.available && auth.ok) {
+    smoke = checkClaudePromptSmoke();
+  }
+  lines.push(`Claude prompt smoke: ${smoke.ok ? "ok" : smoke.skipped ? "skipped" : "failed"}`);
+  if (smoke.detail) {
+    lines.push(`Claude prompt smoke detail: ${smoke.detail}`);
+  }
+
+  lines.push("", "Next steps:");
+  let exitCode = 0;
+  if (!node.ok) {
+    lines.push("Install Node.js 20 or newer before using this plugin.");
+    exitCode = EXIT_USAGE;
+  } else if (!claude.available) {
+    lines.push("Install Claude Code CLI separately, then rerun `claude:doctor`.");
+    exitCode = EXIT_CLAUDE_MISSING;
+  } else if (!auth.ok) {
+    lines.push("Run `claude auth login`, then rerun `claude:doctor`.");
+    exitCode = EXIT_CLAUDE_AUTH;
+  } else if (!smoke.ok) {
+    lines.push(formatClaudeFailureAdvice(smoke.failure, "planning"));
+    exitCode = EXIT_PLAN_FAILED;
+  } else if (!project.ok || missingFiles.length > 0) {
+    lines.push("Restore the project/plugin structure, then rerun `claude:doctor`.");
+    exitCode = EXIT_USAGE;
+  } else {
+    lines.push("Ready. Try `claude:plan --recommend-skills <request>` or `claude:plan <request>`.");
+  }
+
+  console.log(redactSecrets(lines.join(os.EOL)));
+  return exitCode;
 }
 
 function handleSetup() {
@@ -172,8 +248,21 @@ function handlePlan(args) {
     console.log(`Usage:
   node plugins/claude/scripts/claude-companion.mjs plan "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --list-skills [--query <text>]
+  node plugins/claude/scripts/claude-companion.mjs plan --recommend-skills "<request>"
+  node plugins/claude/scripts/claude-companion.mjs plan --dry-run [--show-skills] "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --show-skills [--skill <id>] "<request>"
-  printf '<request>' | node plugins/claude/scripts/claude-companion.mjs plan`);
+  printf '<request>' | node plugins/claude/scripts/claude-companion.mjs plan
+
+Options:
+  --list-skills              List skills without running a plan
+  --recommend-skills         Recommend skills for the request without running Claude
+  --dry-run                  Print the prompt/context without running Claude
+  --show-skills              Include matching skill candidates in the Claude prompt
+  --skill <id>               Require one skill
+  --skills <id,id>           Require multiple skills
+  --scope all|local|global   Skill sources to scan (default: all)
+  --query <text>             Filter skill lookup by id, name, description, or path
+  --format text|json         Output format for skill list modes (default: text)`);
     return 0;
   }
 
@@ -194,16 +283,27 @@ function handlePlan(args) {
     return 0;
   }
 
-  const request = readPlanRequest(planOptions.requestArgs);
-  if (!request) {
-    printError("Missing plan request. Pass a request argument or pipe one through stdin.");
-    return EXIT_USAGE;
+  if (planOptions.recommendSkills) {
+    const recommendationText = readPlanRequest(planOptions.requestArgs) || planOptions.query;
+    if (!recommendationText) {
+      printError("Missing skill recommendation query. Pass a request or use --query <text>.");
+      return EXIT_USAGE;
+    }
+    printRecommendedSkills({
+      cwd: process.cwd(),
+      home: getHomeDirectory(),
+      scope: planOptions.scope,
+      text: recommendationText
+    });
+    return 0;
   }
 
-  const claude = checkClaudeCli();
-  if (!claude.available) {
-    printError("Claude Code CLI is not available. Run claude:setup for details.");
-    return EXIT_CLAUDE_MISSING;
+  const request = readPlanRequest(planOptions.requestArgs);
+  if (!request) {
+    printError(
+      "Missing plan request. Pass a request argument, pipe one through stdin, or run `claude:plan --recommend-skills <request>` first."
+    );
+    return EXIT_USAGE;
   }
 
   const promptPath = path.join(PLUGIN_ROOT, "plugins/claude/prompts/plan.md");
@@ -225,6 +325,18 @@ function handlePlan(args) {
     })
   });
 
+  if (planOptions.dryRun) {
+    printPlanDryRun(prompt);
+    return 0;
+  }
+
+  const claude = checkClaudeCli();
+  if (!claude.available) {
+    printError("Claude Code CLI is not available. Run `claude:doctor` for details.");
+    return EXIT_CLAUDE_MISSING;
+  }
+
+  const timeout = getPlanTimeoutMs();
   const result = runCommand(
     "claude",
     [
@@ -239,24 +351,23 @@ function handlePlan(args) {
     {
       cwd: process.cwd(),
       maxBuffer: 20 * 1024 * 1024,
-      timeout: 180_000
+      timeout
     }
   );
 
   if (result.error) {
-    printError(`Failed to run Claude: ${result.error.message}`);
+    printError(formatClaudeFailure(result, { action: "plan", timeout }));
     return EXIT_PLAN_FAILED;
   }
 
   if (result.status !== 0) {
-    const combined = [result.stderr, result.stdout].filter(Boolean).join(os.EOL).trim();
-    printError(`Claude plan failed with exit ${result.status}.${combined ? `${os.EOL}${combined}` : ""}`);
+    printError(formatClaudeFailure(result, { action: "plan", timeout }));
     return EXIT_PLAN_FAILED;
   }
 
   const output = redactSecrets(result.stdout.trimEnd());
   if (!output.trim()) {
-    printError("Claude returned no plan output.");
+    printError("Claude returned no plan output. Try a narrower request or run `claude:doctor`.");
     return EXIT_PLAN_FAILED;
   }
 
@@ -316,7 +427,9 @@ function parsePlanArgs(args) {
   const options = {
     requestArgs: [],
     explicitSkills: [],
+    dryRun: false,
     listSkills: false,
+    recommendSkills: false,
     showSkills: false,
     scope: "all",
     query: "",
@@ -328,6 +441,10 @@ function parsePlanArgs(args) {
     const arg = args[index];
     if (arg === "--list-skills") {
       options.listSkills = true;
+    } else if (arg === "--recommend-skills") {
+      options.recommendSkills = true;
+    } else if (arg === "--dry-run") {
+      options.dryRun = true;
     } else if (arg === "--show-skills") {
       options.showSkills = true;
     } else if (arg === "--skill") {
@@ -374,6 +491,30 @@ function addExplicitSkills(options, rawValue) {
   }
 }
 
+function printRecommendedSkills({ cwd, home, scope, text }) {
+  const allSkills = discoverSkills({ cwd, home, scope, query: "" });
+  const candidates = selectSkillCandidates(allSkills, text, 5);
+  console.log(`Recommended Claude skills (${candidates.length})`);
+  if (candidates.length === 0) {
+    console.log(`No matching skills found for: ${text}`);
+    console.log("Try `claude:plan --list-skills --query <keyword>`.");
+    return;
+  }
+
+  for (const skill of candidates) {
+    const description = formatSkillDescriptionForText(skill.description);
+    console.log(`- ${skill.id} [${skill.scope}]${description}`);
+  }
+
+  console.log("");
+  console.log("Usage examples:");
+  console.log(`claude:plan --skill ${candidates[0].id} ${text}`);
+  if (candidates.length > 1) {
+    const ids = candidates.slice(0, 3).map((skill) => skill.id).join(",");
+    console.log(`claude:plan --skills ${ids} ${text}`);
+  }
+}
+
 function readPlanRequest(args) {
   const argText = args.join(" ").trim();
   if (argText) {
@@ -409,6 +550,18 @@ ${workspace.gitStatus || "(git status unavailable or empty)"}
 Visible files:
 ${workspace.files || "(no files found)"}
 `;
+}
+
+function printPlanDryRun(prompt) {
+  console.log(`Claude plan dry run
+
+No Claude CLI call was made.
+
+Command preview:
+claude -p <prompt> --output-format text --no-session-persistence --tools Read,Glob,Grep,LS
+
+Prompt:
+${prompt}`);
 }
 
 function buildSkillContext({ request, showSkills, explicitSkills, scope, query }) {
@@ -692,11 +845,7 @@ function skillMatchesQuery(skill, query) {
 }
 
 function selectSkillCandidates(skills, text, limit) {
-  const terms = text
-    .toLowerCase()
-    .split(/[^a-z0-9가-힣_-]+/i)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 3);
+  const terms = extractSkillSearchTerms(text);
 
   if (terms.length === 0) {
     return skills.slice(0, limit);
@@ -715,14 +864,81 @@ function selectSkillCandidates(skills, text, limit) {
 }
 
 function scoreSkill(skill, terms) {
-  const haystack = [skill.id, skill.name, skill.description, skill.path]
-    .join("\n")
-    .toLowerCase();
-  return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+  const id = skill.id.toLowerCase();
+  const name = skill.name.toLowerCase();
+  const description = skill.description.toLowerCase();
+  const filePath = skill.path.toLowerCase();
+  const text = [id, name, description, filePath].join("\n");
+  const baseScore = terms.reduce((score, term) => {
+    if (!text.includes(term)) {
+      return score;
+    }
+    let nextScore = score + 1;
+    if (id.includes(term)) {
+      nextScore += 8;
+    }
+    if (name.includes(term)) {
+      nextScore += 6;
+    }
+    if (description.includes(term)) {
+      nextScore += 3;
+    }
+    return nextScore;
+  }, 0);
+
+  if (baseScore === 0) {
+    return 0;
+  }
+
+  let finalScore = baseScore - supportSkillPenalty(skill, terms);
+  if (terms.includes("__planning_creation")) {
+    if (/writing-plans|writing-plan|plan-.*review|planning/.test(id)) {
+      finalScore += 25;
+    }
+    if (/executing-plans|execute|execution/.test(id)) {
+      finalScore -= 25;
+    }
+  }
+  return finalScore;
+}
+
+function extractSkillSearchTerms(text) {
+  const normalized = text.toLowerCase();
+  const terms = normalized
+    .split(/[^a-z0-9가-힣_-]+/i)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 3);
+
+  if (/\bplan\b|계획|기획|짤때|짜기|작성/.test(normalized)) {
+    terms.push("planning", "plans", "implementation");
+  }
+  if (/\bplan\b|계획|기획|짤때|짜기|작성/.test(normalized)) {
+    terms.push("__planning_creation");
+  }
+
+  return uniqueValues(terms);
+}
+
+function supportSkillPenalty(skill, terms) {
+  if (!["doctor", "setup", "skills"].includes(skill.id)) {
+    return 0;
+  }
+
+  const supportIntentTerms = ["doctor", "setup", "skills", "diagnose", "diagnostic", "list"];
+  const isSupportIntent = terms.some((term) => supportIntentTerms.includes(term));
+  return isSupportIntent ? 0 : 40;
 }
 
 function getHomeDirectory() {
   return process.env.HOME || os.homedir();
+}
+
+function checkNodeRuntime() {
+  const major = Number.parseInt(process.versions.node.split(".")[0], 10);
+  return {
+    ok: Number.isFinite(major) && major >= 20,
+    detail: process.version
+  };
 }
 
 function checkClaudeCli() {
@@ -747,6 +963,44 @@ function checkClaudeCli() {
   return {
     available: true,
     detail: redactSecrets((result.stdout || result.stderr || "ok").trim())
+  };
+}
+
+function checkClaudePromptSmoke() {
+  const timeout = Math.min(getPlanTimeoutMs(), 30_000);
+  const result = runCommand(
+    "claude",
+    [
+      "-p",
+      "Reply with exactly OK if this read-only planning smoke test can run.",
+      "--output-format",
+      "text",
+      "--no-session-persistence",
+      "--tools",
+      "Read,Glob,Grep,LS"
+    ],
+    {
+      cwd: process.cwd(),
+      maxBuffer: 1024 * 1024,
+      timeout
+    }
+  );
+
+  if (result.error || result.status !== 0) {
+    return {
+      ok: false,
+      skipped: false,
+      detail: summarizeFailureDetail(result),
+      failure: { result, timeout }
+    };
+  }
+
+  const output = redactSecrets(result.stdout.trim() || result.stderr.trim());
+  return {
+    ok: Boolean(output),
+    skipped: false,
+    detail: output || "empty output",
+    failure: output ? null : { result, timeout }
   };
 }
 
@@ -788,6 +1042,68 @@ function summarizeAuthStatus(text) {
   } catch {
     return text.split(/\r?\n/)[0];
   }
+}
+
+function getPlanTimeoutMs() {
+  const raw = process.env.CLAUDE_PLUGIN_PLAN_TIMEOUT_MS;
+  if (!raw) {
+    return DEFAULT_PLAN_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_PLAN_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+function formatClaudeFailure(failure, { action, timeout }) {
+  if (failure.error?.code === "ETIMEDOUT") {
+    return `Claude ${action} timed out after ${timeout}ms.
+Try a narrower request, check Claude CLI responsiveness, then rerun the command.`;
+  }
+
+  const combined = summarizeFailureDetail(failure);
+  if (isClaudeAuthFailure(combined)) {
+    return `Claude authentication failed while planning.
+Run \`claude auth login\`, then rerun \`claude:doctor\`.
+${combined}`;
+  }
+
+  if (isClaudeUsageCreditsFailure(combined)) {
+    return `Claude usage credits are required for this plan request.
+Turn on usage credits at https://claude.ai/settings/usage or configure Claude CLI to use a standard context model, then rerun \`claude:doctor\`.
+${combined}`;
+  }
+
+  return `Claude ${action} failed with exit ${failure.status}.${combined ? `${os.EOL}${combined}` : ""}`;
+}
+
+function formatClaudeFailureAdvice(failure, context) {
+  if (!failure) {
+    return `Claude ${context} failed. Rerun \`claude:doctor\` for details.`;
+  }
+  return formatClaudeFailure(failure.result, {
+    action: context,
+    timeout: failure.timeout || DEFAULT_PLAN_TIMEOUT_MS
+  });
+}
+
+function summarizeFailureDetail(result) {
+  if (!result) {
+    return "";
+  }
+  if (result.error?.message) {
+    return redactSecrets(result.error.message);
+  }
+  return redactSecrets([result.stderr, result.stdout].filter(Boolean).join(os.EOL).trim());
+}
+
+function isClaudeAuthFailure(text) {
+  return /401|invalid authentication credentials|not authenticated|auth/i.test(text || "");
+}
+
+function isClaudeUsageCreditsFailure(text) {
+  return /usage credits required|1m context/i.test(text || "");
 }
 
 function checkProject(cwd) {

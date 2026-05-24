@@ -13,6 +13,7 @@ The intended workflow is simple: Claude plans, Codex validates the plan against 
 
 ## Features
 
+- `claude:doctor`: Diagnose Claude CLI, auth, prompt execution, project state, and plugin files.
 - `claude:setup`: Check whether the local Claude Code CLI and plugin files are ready.
 - `claude:plan`: Ask Claude for a read-only implementation plan.
 - `claude:skills`: List local and global Claude Code skills that can be referenced by planning.
@@ -32,6 +33,16 @@ The plugin does not install Claude automatically. Install and authenticate Claud
 ```bash
 claude auth status
 ```
+
+## claude:doctor
+
+Runs a fuller diagnostic than `claude:setup`, including a read-only Claude prompt smoke test.
+
+```text
+claude:doctor
+```
+
+Use this first when `claude:plan` fails with auth errors, empty output, or timeouts.
 
 ## claude:setup
 
@@ -78,10 +89,14 @@ Skills can also be used with the plan command:
 ```text
 claude:plan --list-skills --query plan
 claude:plan --list-skills --query "implementation plan"
+claude:plan --recommend-skills frontend polish
+claude:plan --dry-run --show-skills add frontend validation
 claude:plan --show-skills add frontend validation
 claude:plan --skill superpowers:writing-plans add release checklist
 claude:plan --skills frontend-design,global-review add UI validation plan
 ```
+
+`--recommend-skills` and `--dry-run` do not call Claude. They are useful for choosing skills and checking what context will be sent before a real plan run.
 
 Claude is expected to return these sections:
 
@@ -109,6 +124,13 @@ Scope options:
 `--query` searches across skill id, name, description, and path, so you can find skills by description keywords without knowing the exact skill name.
 
 Text output shortens long descriptions for readability. Use `--format json` when you need the full description and path.
+
+## Troubleshooting
+
+- Run `claude:doctor` when setup looks correct but `claude:plan` fails.
+- If you see `401 Invalid authentication credentials`, run `claude auth login`, then rerun `claude:doctor`.
+- If you see `Usage credits required for 1M context`, turn on usage credits at <https://claude.ai/settings/usage> or configure Claude CLI to use a standard context model, then rerun `claude:doctor`.
+- If a plan times out, retry with a narrower request or inspect the prompt with `claude:plan --dry-run <request>`.
 
 ## Limitations
 

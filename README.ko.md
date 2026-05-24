@@ -13,6 +13,7 @@ Codex Plugin Claude Code는 Codex에서 로컬 Claude Code CLI에 읽기 전용 
 
 ## 기능
 
+- `claude:doctor`: Claude CLI, 인증, prompt 실행, 프로젝트 상태, 플러그인 파일을 진단합니다.
 - `claude:setup`: 로컬 Claude Code CLI와 플러그인 파일 준비 상태를 확인합니다.
 - `claude:plan`: Claude에게 읽기 전용 구현 계획을 요청합니다.
 - `claude:skills`: 계획에서 참조할 수 있는 로컬 및 글로벌 Claude Code skill을 조회합니다.
@@ -32,6 +33,16 @@ Codex Plugin Claude Code는 Codex에서 로컬 Claude Code CLI에 읽기 전용 
 ```bash
 claude auth status
 ```
+
+## claude:doctor
+
+`claude:setup`보다 자세한 진단을 실행합니다. 읽기 전용 Claude prompt smoke test까지 확인합니다.
+
+```text
+claude:doctor
+```
+
+`claude:plan`이 인증 오류, 빈 출력, timeout으로 실패할 때 먼저 사용합니다.
 
 ## claude:setup
 
@@ -78,10 +89,14 @@ Skill을 함께 사용할 수도 있습니다.
 ```text
 claude:plan --list-skills --query plan
 claude:plan --list-skills --query "implementation plan"
+claude:plan --recommend-skills frontend polish
+claude:plan --dry-run --show-skills add frontend validation
 claude:plan --show-skills add frontend validation
 claude:plan --skill superpowers:writing-plans add release checklist
 claude:plan --skills frontend-design,global-review add UI validation plan
 ```
+
+`--recommend-skills`와 `--dry-run`은 Claude를 호출하지 않습니다. 실제 계획 실행 전에 skill을 고르거나 Claude에 전달될 context를 확인할 때 사용합니다.
 
 Claude는 다음 섹션을 반환해야 합니다.
 
@@ -109,6 +124,13 @@ claude:skills --scope all --query "production-grade frontend"
 `--query`는 skill id, name, description, path를 함께 검색합니다. 따라서 skill 이름을 몰라도 설명에 들어 있는 문구로 찾을 수 있습니다.
 
 text 출력은 읽기 쉽게 긴 description을 줄입니다. 전체 description과 path가 필요하면 `--format json`을 사용합니다.
+
+## 문제 해결
+
+- setup은 통과하지만 `claude:plan`이 실패하면 `claude:doctor`를 실행합니다.
+- `401 Invalid authentication credentials`가 보이면 `claude auth login`을 실행한 뒤 `claude:doctor`를 다시 실행합니다.
+- `Usage credits required for 1M context`가 보이면 <https://claude.ai/settings/usage>에서 usage credits를 켜거나 Claude CLI가 standard context model을 사용하도록 설정한 뒤 `claude:doctor`를 다시 실행합니다.
+- 계획 실행이 timeout되면 더 좁은 요청으로 다시 실행하거나 `claude:plan --dry-run <request>`로 prompt를 먼저 확인합니다.
 
 ## 제한 사항
 

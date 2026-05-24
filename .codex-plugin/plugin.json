@@ -1,7 +1,7 @@
 {
   "name": "claude",
   "version": "0.1.0",
-  "description": "Use the local Claude Code CLI from Codex to produce read-only implementation plans.",
+  "description": "Use the local Claude Code CLI from Codex to diagnose setup, recommend skills, and produce read-only implementation plans.",
   "author": {
     "name": "sangjinsu"
   },
@@ -15,8 +15,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Claude Code Planner",
-    "shortDescription": "Ask local Claude Code for implementation plans from Codex.",
-    "longDescription": "A minimal Codex plugin that checks local Claude Code CLI readiness and asks Claude to produce read-only implementation plans. Claude plans; Codex validates and implements.",
+    "shortDescription": "Diagnose Claude Code setup and ask Claude for read-only plans from Codex.",
+    "longDescription": "A minimal Codex plugin that checks local Claude Code CLI readiness, recommends Claude skills, previews prompts, and asks Claude to produce read-only implementation plans. Claude plans; Codex validates and implements.",
     "developerName": "sangjinsu",
     "category": "Coding",
     "capabilities": [
@@ -24,7 +24,9 @@
       "Read"
     ],
     "defaultPrompt": [
+      "claude:doctor",
       "claude:setup",
+      "claude:plan --recommend-skills frontend polish",
       "claude:skills --query frontend",
       "claude:plan add a small feature"
     ],
