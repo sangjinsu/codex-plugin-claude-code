@@ -2,22 +2,26 @@
 
 # Codex Plugin Claude Code
 
-Codex Plugin Claude Code is a minimal Codex plugin that asks the local Claude Code CLI to create read-only implementation plans.
+Codex Plugin Claude Code is a minimal Codex plugin that calls the local Claude Code CLI for read-only planning and review. Claude inspects the repository and advises; it never edits files.
 
-This plugin takes the opposite approach of `codex-plugin-cc`:
+It takes the opposite approach of `codex-plugin-cc`:
 
 - `codex-plugin-cc`: Call Codex from Claude Code
 - This plugin: Call Claude Code from Codex
 
-The intended workflow is simple: Claude plans, Codex validates the plan against the repository state, then Codex implements the change.
+The workflow is simple: Claude plans or reviews, Codex validates the output against the repository state, then Codex implements.
 
-## Features
+## Commands
 
-- `claude:doctor`: Diagnose Claude CLI, auth, prompt execution, project state, and plugin files.
-- `claude:setup`: Check whether the local Claude Code CLI and plugin files are ready.
-- `claude:plan`: Ask Claude for a read-only implementation plan.
-- `claude:review`: Ask Claude for a read-only review of the current git diff.
-- `claude:skills`: List local and global Claude Code skills that can be referenced by planning.
+| Command | Purpose |
+|---------|---------|
+| `claude:doctor` | Diagnose Claude CLI, auth, prompt execution, project state, and plugin files. |
+| `claude:setup` | Check whether the local Claude Code CLI and plugin files are ready. |
+| `claude:plan` | Ask Claude for a read-only implementation plan. |
+| `claude:review` | Ask Claude for a read-only review of the current git diff. |
+| `claude:skills` | List local and global Claude Code skills that planning and review can reference. |
+
+`plan` and `review` are the core read-only workflows. `doctor` and `setup` check readiness, and `skills` lists the skills those workflows can use.
 
 ## Installation
 
@@ -176,7 +180,7 @@ Text output shortens long descriptions for readability. Use `--format json` when
 
 GitHub Actions runs offline checks that do not require the local `claude` CLI, Claude authentication, or Anthropic API credentials.
 
-The workflow runs lint, tests, and smoke checks for Claude-free commands such as skill listing, skill recommendation, dry-run prompt rendering, and plan validation.
+The workflow runs lint, tests, and smoke checks for Claude-free commands: skill listing, skill recommendation, dry-run prompt rendering for `plan` and `review`, and plan validation.
 
 ## Troubleshooting
 

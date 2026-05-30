@@ -2,22 +2,26 @@
 
 # Codex Plugin Claude Code
 
-Codex Plugin Claude Code는 Codex에서 로컬 Claude Code CLI에 읽기 전용 구현 계획을 요청하는 최소 Codex 플러그인입니다.
+Codex Plugin Claude Code는 Codex에서 로컬 Claude Code CLI를 호출해 읽기 전용 계획과 리뷰를 받는 최소 Codex 플러그인입니다. Claude는 저장소를 살펴보고 조언만 하며, 파일을 직접 수정하지 않습니다.
 
 이 플러그인은 `codex-plugin-cc`의 반대 방향을 목표로 합니다.
 
 - `codex-plugin-cc`: Claude Code에서 Codex 호출
 - 이 플러그인: Codex에서 Claude Code 호출
 
-기본 흐름은 단순합니다. Claude가 계획을 세우고, Codex가 저장소 상태와 비교해 계획을 검증한 뒤, Codex가 구현합니다.
+기본 흐름은 단순합니다. Claude가 계획하거나 리뷰하고, Codex가 그 결과를 저장소 상태와 비교해 검증한 뒤, Codex가 구현합니다.
 
-## 기능
+## 명령어
 
-- `claude:doctor`: Claude CLI, 인증, prompt 실행, 프로젝트 상태, 플러그인 파일을 진단합니다.
-- `claude:setup`: 로컬 Claude Code CLI와 플러그인 파일 준비 상태를 확인합니다.
-- `claude:plan`: Claude에게 읽기 전용 구현 계획을 요청합니다.
-- `claude:review`: Claude에게 현재 git diff에 대한 읽기 전용 리뷰를 요청합니다.
-- `claude:skills`: 계획에서 참조할 수 있는 로컬 및 글로벌 Claude Code skill을 조회합니다.
+| 명령어 | 용도 |
+|--------|------|
+| `claude:doctor` | Claude CLI, 인증, prompt 실행, 프로젝트 상태, 플러그인 파일을 진단합니다. |
+| `claude:setup` | 로컬 Claude Code CLI와 플러그인 파일 준비 상태를 확인합니다. |
+| `claude:plan` | Claude에게 읽기 전용 구현 계획을 요청합니다. |
+| `claude:review` | Claude에게 현재 git diff에 대한 읽기 전용 리뷰를 요청합니다. |
+| `claude:skills` | 계획과 리뷰에서 참조할 수 있는 로컬 및 글로벌 Claude Code skill을 조회합니다. |
+
+`plan`과 `review`가 핵심 읽기 전용 워크플로입니다. `doctor`와 `setup`은 준비 상태를 점검하고, `skills`는 이 워크플로가 사용할 skill을 조회합니다.
 
 ## 설치
 
@@ -176,7 +180,7 @@ text 출력은 읽기 쉽게 긴 description을 줄입니다. 전체 description
 
 GitHub Actions는 로컬 `claude` CLI, Claude 인증, Anthropic API credential이 없어도 실행되는 오프라인 검증을 수행합니다.
 
-workflow는 lint, test와 함께 skill 조회, skill 추천, dry-run prompt 렌더링, plan 검증처럼 Claude를 호출하지 않는 command를 smoke test로 확인합니다.
+workflow는 lint, test와 함께 Claude를 호출하지 않는 command를 smoke test로 확인합니다. skill 조회, skill 추천, `plan`과 `review`의 dry-run prompt 렌더링, plan 검증이 여기에 포함됩니다.
 
 ## 문제 해결
 
