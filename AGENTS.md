@@ -9,14 +9,9 @@
 - `codex-plugin-cc`: Claude Code에서 Codex 호출
 - 이 플러그인: Codex에서 Claude Code 호출
 
-MVP에서는 다음 기능만 구현한다.
+처음에는 `claude:setup`과 `claude:plan`만 구현했고, 기본 흐름이 안정화된 뒤 같은 read-only 원칙으로 `claude:doctor`, `claude:review`, `claude:skills`를 더했다.
 
-- claude:setup
-- claude:plan
-
-기본 흐름이 안정화된 뒤 같은 read-only 원칙으로 claude:review를 추가했다. Claude가 현재 git diff를 검토하고, Codex가 그 결과를 반영한다.
-
-Claude는 계획을 세우고, Codex는 구현한다.
+Claude는 계획하거나 리뷰하고, Codex는 검증한 뒤 구현한다.
 
 ## 역할
 
@@ -47,47 +42,52 @@ Codex는 다음을 담당한다.
 Claude의 출력은 참고용 계획이다.
 Codex는 반드시 저장소 상태와 비교해 검증한 뒤 구현한다.
 
-## MVP 기능
+## 명령어
 
-## claude:setup
+모든 명령어는 read-only다. Claude는 조사하고 조언하며, 파일은 Codex가 수정한다.
+
+### claude:doctor
+
+`claude:doctor`는 `claude:setup`보다 자세한 진단을 수행한다.
+
+- Claude CLI 설치·실행 여부
+- 인증 상태
+- read-only prompt smoke test
+- 프로젝트 상태와 필수 플러그인 파일
+
+`claude:plan`이 인증 오류, 빈 출력, timeout으로 실패할 때 먼저 사용한다.
+
+### claude:setup
 
 `claude:setup`은 Claude Code CLI 사용 가능 여부를 확인한다.
 
-확인할 내용은 다음과 같다.
-
-- `claude` CLI가 설치되어 있는지
-- `claude` 명령을 실행할 수 있는지
+- `claude` CLI가 설치·실행되는지
 - 현재 디렉터리가 유효한 프로젝트인지
-- 플러그인에 필요한 파일 구조가 존재하는지
-- 계획 실행에 필요한 스크립트가 존재하는지
+- 플러그인에 필요한 파일과 스크립트가 존재하는지
 
-Claude CLI가 없다면 자동 설치하지 않는다.
-대신 설치가 필요하다는 메시지를 출력한다.
+Claude CLI가 없어도 자동 설치하지 않고, 설치가 필요하다는 메시지만 출력한다.
 
-## claude:plan
+### claude:plan
 
 `claude:plan`은 Claude에게 Codex의 `/plan`처럼 행동하도록 요청한다.
 
-Claude는 다음만 수행한다.
+Claude는 관련 파일·구조 파악, 현재 상태 요약, 구현 계획 작성, 검증 방법 제안, 리스크 정리만 수행한다.
 
-- 관련 파일과 구조 파악
-- 현재 상태 요약
-- 구현 계획 작성
-- 검증 방법 제안
-- 리스크 정리
+Claude는 파일 수정, 코드 구현, 커밋, destructive command 실행, 비밀 정보 출력을 하지 않는다.
 
-Claude는 다음을 하면 안 된다.
+기본적으로 `PLAN.md`를 만들지 않고 계획을 stdout으로 반환한다. 사용자가 명시적으로 요청한 경우에만 계획 문서를 저장한다.
 
-- 파일 수정
-- 코드 구현
-- 커밋
-- destructive command 실행
-- 비밀 정보 출력
+### claude:review
 
-기본적으로 `PLAN.md` 파일은 만들지 않는다.
-계획은 stdout으로 반환한다.
+`claude:review`는 Claude에게 현재 git diff를 read-only로 검토하도록 요청한다.
 
-사용자가 명시적으로 요청한 경우에만 계획 문서를 생성한다.
+기본은 working tree를 `HEAD`와 비교하며, `--staged`는 staged 변경분을, `--base <ref>`는 지정한 ref와의 diff를 검토한다. 변경분이 없으면 Claude를 호출하지 않는다.
+
+plan과 동일한 read-only 제약과 비밀 마스킹이 적용된다.
+
+### claude:skills
+
+`claude:skills`는 plan과 review가 참조할 수 있는 로컬·글로벌 Claude Code skill을 조회한다.
 
 ## 기대하는 Plan 출력 형식
 
@@ -118,41 +118,54 @@ Risks
 - 사이드 이펙트
 - 확인해야 할 엣지 케이스
 
+## 기대하는 Review 출력 형식
+
+Summary
+
+- diff가 무엇을 바꾸는지 요약한다.
+
+Findings
+
+- correctness / security / style로 분류한다.
+- 보고할 내용이 없으면 "None"을 사용한다.
+
+Risks
+
+- 사이드 이펙트, 엣지 케이스, Codex가 확인할 불확실성.
+
+Suggestions
+
+- Codex가 취할 구체적 수정. 가능하면 파일을 지목한다.
+
+Verdict
+
+- `ready` 또는 `needs changes`.
+
 ## 저장소 구조
 
-권장 구조는 다음과 같다.
+실제 구조는 다음과 같다.
 
+```text
 .codex-plugin/plugin.json
-
-plugins/claude/
-
-plugins/claude/scripts/
-
-plugins/claude/prompts/
-
+plugins/claude/scripts/claude-companion.mjs
+plugins/claude/prompts/        # plan.md, review.md
+skills/                        # doctor, setup, plan, review, skills
+tests/claude-companion.test.mjs
+.github/workflows/ci.yml
 README.md
-
+README.ko.md
 AGENTS.md
+```
 
-MVP에서는 복잡한 구조를 피한다.
-
-먼저 Codex가 Claude CLI를 호출하고, Claude가 계획을 반환하는 흐름을 안정화한다.
+복잡한 구조는 피한다. Codex가 Claude CLI를 호출하고 Claude가 계획·리뷰를 반환하는 흐름을 단순하게 유지한다.
 
 ## 구현 원칙
 
-MVP에서는 Anthropic API를 직접 호출하지 않는다.
-
-로컬에 설치된 `claude` CLI를 사용한다.
-
-스크립트는 가능하면 Node.js로 작성한다.
-
-복잡한 오케스트레이션은 추가하지 않는다.
-
-MCP는 도입하지 않는다.
-
-백그라운드 작업도 도입하지 않는다.
-
-먼저 동기 실행 방식으로 setup과 plan만 안정화한다.
+- Anthropic API를 직접 호출하지 않고, 로컬에 설치된 `claude` CLI를 사용한다.
+- 스크립트는 가능하면 Node.js로 작성한다.
+- 복잡한 오케스트레이션은 추가하지 않는다.
+- MCP와 백그라운드 작업은 도입하지 않는다.
+- 동기 실행 방식을 유지한다.
 
 ## 보안 규칙
 
@@ -172,42 +185,34 @@ MCP는 도입하지 않는다.
 
 ## 테스트
 
-스크립트를 변경한 경우 최소한 다음을 확인한다.
+스크립트를 변경하면 최소한 다음을 확인한다.
 
-node path/to/script.mjs --help
-
-npm test
-
+```bash
+node plugins/claude/scripts/claude-companion.mjs --help
 npm run lint
+npm test
+```
 
-테스트가 없다면 최소 smoke test를 추가한다.
+테스트가 없다면 최소한 smoke test를 추가한다.
 
 ## README 요구사항
 
 README에는 다음 내용을 포함한다.
 
-- 이 플러그인이 무엇인지
-- `codex-plugin-cc`와 어떤 점이 반대 방향인지
+- 이 플러그인이 무엇인지, `codex-plugin-cc`와 어떻게 반대 방향인지
 - 설치 방법
-- claude:setup 사용법
-- claude:plan 사용법
+- 각 명령어(`doctor`, `setup`, `plan`, `review`, `skills`) 사용법
 - 제한 사항
 - 보안 주의사항
 
 ## 최종 원칙
 
-작게 시작한다.
+작게 시작한다. 기본 흐름은 다음과 같다.
 
-MVP 목표는 다음 흐름이다.
-
-사용자가 Codex에 요청한다.
-
-Codex가 Claude CLI를 호출한다.
-
-Claude가 `/plan`처럼 계획을 반환한다.
-
-Codex가 계획을 검증한다.
-
-Codex가 구현한다.
+1. 사용자가 Codex에 요청한다.
+2. Codex가 Claude CLI를 호출한다.
+3. Claude가 `/plan`처럼 계획을 반환하거나 diff를 리뷰한다.
+4. Codex가 결과를 검증한다.
+5. Codex가 구현한다.
 
 이 흐름이 안정화된 뒤 read-only review를 추가했다. status, result, cancel, MCP, background job은 아직 추가하지 않는다.
