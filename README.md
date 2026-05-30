@@ -16,6 +16,7 @@ The intended workflow is simple: Claude plans, Codex validates the plan against 
 - `claude:doctor`: Diagnose Claude CLI, auth, prompt execution, project state, and plugin files.
 - `claude:setup`: Check whether the local Claude Code CLI and plugin files are ready.
 - `claude:plan`: Ask Claude for a read-only implementation plan.
+- `claude:review`: Ask Claude for a read-only review of the current git diff.
 - `claude:skills`: List local and global Claude Code skills that can be referenced by planning.
 
 ## Installation
@@ -112,6 +113,46 @@ Claude is expected to return these sections:
 - `Risks`
 - `Implementation Checklist`
 
+## claude:review
+
+Requests a read-only review of the current changes from Claude, similar to a reviewer reading `git diff`.
+
+```text
+claude:review
+claude:review --staged
+claude:review --base main
+```
+
+Internally runs the following script:
+
+```bash
+node plugins/claude/scripts/claude-companion.mjs review
+```
+
+By default, `claude:review` reviews the working tree against `HEAD`. Use `--staged` to review staged changes (`git diff --cached`) or `--base <ref>` to diff against a specific ref. When there are no changes, the command reports that nothing was reviewed and does not call Claude.
+
+The Claude CLI call is restricted to `Read`, `Glob`, `Grep`, and `LS` tools, so Claude can inspect context but cannot edit files.
+
+Claude is expected to return these sections:
+
+- `Summary`
+- `Findings` (correctness, security, style)
+- `Risks`
+- `Suggestions`
+- `Verdict` (`ready` or `needs changes`)
+
+Review shares the plan command options for skills, model, timeout, and saving:
+
+```text
+claude:review --dry-run
+claude:review --show-skills
+claude:review --skill superpowers:requesting-code-review
+claude:review --model claude-sonnet-4-5 --timeout 240000 --max-files 120
+claude:review --output REVIEW.md
+```
+
+`--dry-run` does not call Claude. It prints the diff context and prompt that would be sent, which is useful for confirming what Claude will review.
+
 ## claude:skills
 
 Lists local and global Claude Code skills.
@@ -149,7 +190,7 @@ The workflow runs lint, tests, and smoke checks for Claude-free commands such as
 - Does not call the Anthropic API directly.
 - Does not use MCP.
 - Does not create background jobs.
-- Does not provide review, status, result, or cancel workflows yet.
+- Does not provide status, result, or cancel workflows yet.
 - Plans returned by Claude are for reference only. Codex should validate them against the repository state before implementing.
 
 ## Security
@@ -182,4 +223,5 @@ npm run lint
 npm test
 node plugins/claude/scripts/claude-companion.mjs --help
 node plugins/claude/scripts/claude-companion.mjs plan --help
+node plugins/claude/scripts/claude-companion.mjs review --help
 ```

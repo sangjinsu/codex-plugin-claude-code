@@ -40,3 +40,4 @@ jobs:
           node plugins/claude/scripts/claude-companion.mjs plan --recommend-skills "plan 짤때 쓸 수 있는 것"
           node plugins/claude/scripts/claude-companion.mjs plan --dry-run --show-skills frontend polish
           printf 'Summary\n\n- Validate offline CI.\n\nCurrent Understanding\n\n- Relevant file: `package.json`\n\nPlan\n\n1. Keep CI smoke tests on Claude-free commands.\n\nValidation\n\n- npm test\n\nRisks\n\n- Low risk.\n\nImplementation Checklist\n\n- Run npm test\n' | node plugins/claude/scripts/claude-companion.mjs plan --check -
+          node plugins/claude/scripts/claude-companion.mjs review --dry-run

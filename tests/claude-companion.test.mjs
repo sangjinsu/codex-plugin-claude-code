@@ -19,6 +19,18 @@ test("--help prints usage", () => {
   assert.match(result.stdout, /doctor/);
   assert.match(result.stdout, /setup/);
   assert.match(result.stdout, /plan/);
+  assert.match(result.stdout, /review/);
+});
+
+test("review --help lists diff and skill options", () => {
+  const result = runNode(["review", "--help"]);
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--base/);
+  assert.match(result.stdout, /--staged/);
+  assert.match(result.stdout, /--dry-run/);
+  assert.match(result.stdout, /--output/);
+  assert.match(result.stdout, /--show-skills/);
 });
 
 test("plan --help lists skill recommendation and dry-run options", () => {
@@ -57,6 +69,7 @@ test("github actions ci exercises Claude-free commands only", () => {
   assert.match(workflow, /claude-companion\.mjs plan --recommend-skills/);
   assert.match(workflow, /claude-companion\.mjs plan --dry-run --show-skills/);
   assert.match(workflow, /claude-companion\.mjs plan --check -/);
+  assert.match(workflow, /claude-companion\.mjs review --dry-run/);
   assert.doesNotMatch(workflow, /^\s*-\s*run:\s*claude\b/m);
   assert.doesNotMatch(workflow, /^\s*claude\s+/m);
 });
@@ -896,6 +909,222 @@ exit 9`
   assert.doesNotMatch(prompt, /--skill/);
   assert.doesNotMatch(prompt, /--skills/);
 });
+
+test("review --dry-run prints the diff prompt without calling Claude", () => {
+  const repo = createGitRepo({ withChange: true, changeContent: "reviewable change\n" });
+  const result = runNode(["review", "--dry-run"], {
+    cwd: repo.dir,
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: repoRoot }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Claude review dry run/);
+  assert.match(result.stdout, /Diff to review \(git diff HEAD\)/);
+  assert.match(result.stdout, /reviewable change/);
+  assert.match(result.stdout, /Read,Glob,Grep,LS/);
+});
+
+test("review sends a read-only review prompt to Claude", () => {
+  const repo = createGitRepo({
+    withChange: true,
+    changeContent: "added behavior\n",
+    secret: "sk-ant-SECRET0123456789abcd"
+  });
+  const promptFile = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "claude-review-prompt-")),
+    "prompt.txt"
+  );
+  const argsFile = path.join(path.dirname(promptFile), "args.txt");
+  const fake = createFakeClaude({
+    body: `if [ "$1" = "--version" ]; then
+  echo "claude 9.9.9"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  printf "%s" "$2" > "$FAKE_CLAUDE_PROMPT_FILE"
+  shift 2
+  printf "%s\\n" "$*" > "$FAKE_CLAUDE_ARGS_FILE"
+  cat <<'REVIEW'
+Summary
+
+- Reviews the diff.
+
+Findings
+
+- correctness: None.
+- security: None.
+- style: None.
+
+Risks
+
+- None.
+
+Suggestions
+
+- None.
+
+Verdict
+
+- ready
+REVIEW
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 9`
+  });
+
+  const result = runNode(["review"], {
+    cwd: repo.dir,
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot,
+      FAKE_CLAUDE_PROMPT_FILE: promptFile,
+      FAKE_CLAUDE_ARGS_FILE: argsFile
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Findings/);
+  assert.match(result.stdout, /Verdict/);
+
+  const prompt = fs.readFileSync(promptFile, "utf8");
+  assert.match(prompt, /Do not modify files/);
+  assert.match(prompt, /Diff to review \(git diff HEAD\)/);
+  assert.match(prompt, /added behavior/);
+  assert.match(prompt, /\[REDACTED\]/);
+  assert.doesNotMatch(prompt, /sk-ant-SECRET/);
+
+  const fakeArgs = fs.readFileSync(argsFile, "utf8");
+  assert.match(fakeArgs, /--output-format text --no-session-persistence --tools Read,Glob,Grep,LS/);
+});
+
+test("review reports no changes when the diff is empty", () => {
+  const repo = createGitRepo({ withChange: false });
+  const fake = createFakeClaude({ body: `echo "claude should not run" >&2\nexit 9` });
+
+  const result = runNode(["review"], {
+    cwd: repo.dir,
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /No changes to review for git diff HEAD/);
+});
+
+test("review redacts secrets from Claude output", () => {
+  const repo = createGitRepo({ withChange: true, changeContent: "tweak\n" });
+  const fake = createFakeClaude({
+    body: `if [ "$1" = "--version" ]; then
+  echo "claude 9.9.9"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  echo "Verdict"
+  echo "- token sk-ant-LEAKED0123456789abcd should be hidden"
+  exit 0
+fi
+exit 9`
+  });
+
+  const result = runNode(["review"], {
+    cwd: repo.dir,
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /\[REDACTED\]/);
+  assert.doesNotMatch(result.stdout, /sk-ant-LEAKED/);
+});
+
+test("review --output writes a metadata-wrapped review file", () => {
+  const repo = createGitRepo({ withChange: true, changeContent: "save me\n" });
+  const outputPath = path.join(repo.dir, "REVIEW.md");
+  const fake = createFakeClaude({
+    body: `if [ "$1" = "--version" ]; then
+  echo "claude 9.9.9"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  echo "Verdict"
+  echo "- ready"
+  exit 0
+fi
+exit 9`
+  });
+
+  const result = runNode(["review", "--output", "REVIEW.md"], {
+    cwd: repo.dir,
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(fs.existsSync(outputPath), true);
+  const saved = fs.readFileSync(outputPath, "utf8");
+  assert.match(saved, /Generated by claude:review/);
+  assert.match(saved, /Reviewed: git diff HEAD/);
+  assert.match(saved, /ready/);
+});
+
+test("review reports missing Claude CLI with doctor guidance", () => {
+  const repo = createGitRepo({ withChange: true, changeContent: "needs claude\n" });
+  const fake = createFakeClaude({ body: `exit 1` });
+
+  const result = runNode(["review"], {
+    cwd: repo.dir,
+    env: {
+      ...process.env,
+      PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: repoRoot
+    }
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /Claude Code CLI is not available/);
+});
+
+test("review rejects combining --staged and --base", () => {
+  const repo = createGitRepo({ withChange: true });
+  const result = runNode(["review", "--staged", "--base", "main"], {
+    cwd: repo.dir,
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: repoRoot }
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /not both/);
+});
+
+function createGitRepo({ withChange = false, changeContent = "changed line\n", secret = "" } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-review-repo-"));
+  const git = (args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  git(["init", "-q"]);
+  git(["config", "user.email", "test@example.com"]);
+  git(["config", "user.name", "Test"]);
+  git(["config", "commit.gpgsign", "false"]);
+  fs.writeFileSync(path.join(dir, "sample.txt"), "base line\n", "utf8");
+  git(["add", "."]);
+  git(["commit", "-q", "-m", "init"]);
+  if (withChange) {
+    let content = `base line\n${changeContent}`;
+    if (secret) {
+      content += `${secret}\n`;
+    }
+    fs.writeFileSync(path.join(dir, "sample.txt"), content, "utf8");
+  }
+  return { dir };
+}
 
 function runNode(args, options = {}) {
   return spawnSync(process.execPath, [scriptPath, ...args], {

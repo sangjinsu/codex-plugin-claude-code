@@ -12,6 +12,7 @@ const EXIT_CLAUDE_AUTH = 3;
 const EXIT_PLAN_FAILED = 4;
 const DEFAULT_PLAN_TIMEOUT_MS = 180_000;
 const DEFAULT_CONTEXT_FILE_LIMIT = 200;
+const DEFAULT_REVIEW_DIFF_BYTE_LIMIT = 200_000;
 const SKILL_DESCRIPTION_PREVIEW_LENGTH = 100;
 const REQUIRED_PLAN_SECTIONS = ["Summary", "Current Understanding", "Plan", "Validation", "Risks"];
 const DESTRUCTIVE_COMMAND_PATTERNS = [
@@ -36,9 +37,11 @@ const REQUIRED_FILES = [
   "skills/doctor/SKILL.md",
   "skills/setup/SKILL.md",
   "skills/plan/SKILL.md",
+  "skills/review/SKILL.md",
   "skills/skills/SKILL.md",
   "plugins/claude/scripts/claude-companion.mjs",
-  "plugins/claude/prompts/plan.md"
+  "plugins/claude/prompts/plan.md",
+  "plugins/claude/prompts/review.md"
 ];
 
 const SENSITIVE_VALUE_PATTERNS = [
@@ -77,6 +80,10 @@ function main() {
     process.exit(handlePlan(args));
   }
 
+  if (command === "review") {
+    process.exit(handleReview(args));
+  }
+
   printError(`Unknown command: ${command}`);
   printHelp();
   process.exit(EXIT_USAGE);
@@ -97,12 +104,16 @@ Usage:
   node plugins/claude/scripts/claude-companion.mjs plan --output PLAN.md "<request>"
   node plugins/claude/scripts/claude-companion.mjs plan --skill <id> "<request>"
   printf '<request>' | node plugins/claude/scripts/claude-companion.mjs plan
+  node plugins/claude/scripts/claude-companion.mjs review [--base <ref>] [--staged]
+  node plugins/claude/scripts/claude-companion.mjs review --dry-run [--show-skills]
+  node plugins/claude/scripts/claude-companion.mjs review --output REVIEW.md
 
 Commands:
   doctor  Diagnose Claude CLI, auth, prompt execution, project, and plugin files.
   setup   Check Claude CLI, auth status, project status, and plugin files.
   skills  List local and global Claude skills visible from this machine.
   plan    Ask Claude Code CLI for a read-only implementation plan.
+  review  Ask Claude Code CLI for a read-only review of the current git diff.
 `);
 }
 
@@ -406,6 +417,293 @@ Options:
     console.log(`Plan saved: ${savePath}`);
   }
   return 0;
+}
+
+function handleReview(args) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`Usage:
+  node plugins/claude/scripts/claude-companion.mjs review [--base <ref>] [--staged]
+  node plugins/claude/scripts/claude-companion.mjs review --dry-run [--show-skills]
+  node plugins/claude/scripts/claude-companion.mjs review --output REVIEW.md
+  node plugins/claude/scripts/claude-companion.mjs review --skill <id>
+
+Options:
+  --base <ref>               Review git diff against <ref> instead of HEAD
+  --staged                   Review staged changes (git diff --cached)
+  --dry-run                  Print the prompt/context without running Claude
+  --output <file>            Save the review with metadata to a file
+  --save                     Save the review to REVIEW.md
+  --model <name>             Pass a Claude model name to the CLI
+  --timeout <ms>             Override the Claude review timeout
+  --max-files <n>            Limit visible files included in the prompt
+  --show-skills              Include matching skill candidates in the Claude prompt
+  --skill <id>               Require one skill
+  --skills <id,id>           Require multiple skills
+  --scope all|local|global   Skill sources to scan (default: all)
+  --query <text>             Filter skill lookup by id, name, description, or path`);
+    return 0;
+  }
+
+  const reviewOptions = parseReviewArgs(args);
+  if (reviewOptions.error) {
+    printError(reviewOptions.error);
+    return EXIT_USAGE;
+  }
+
+  const context = collectReviewContext(process.cwd(), reviewOptions);
+  if (context.error) {
+    printError(context.error);
+    return EXIT_USAGE;
+  }
+
+  if (!context.diff.trim()) {
+    console.log(`No changes to review for ${context.diffCommand}.`);
+    return 0;
+  }
+
+  const promptPath = path.join(PLUGIN_ROOT, "plugins/claude/prompts/review.md");
+  if (!fs.existsSync(promptPath)) {
+    printError(`Missing prompt template: ${path.relative(PLUGIN_ROOT, promptPath)}`);
+    return EXIT_USAGE;
+  }
+
+  const prompt = buildReviewPrompt({
+    template: fs.readFileSync(promptPath, "utf8"),
+    context,
+    skillContext: buildSkillContext({
+      request: context.diff,
+      showSkills: reviewOptions.showSkills,
+      explicitSkills: reviewOptions.explicitSkills,
+      scope: reviewOptions.scope,
+      query: reviewOptions.query
+    })
+  });
+
+  if (reviewOptions.dryRun) {
+    printReviewDryRun(prompt, reviewOptions);
+    return 0;
+  }
+
+  const claude = checkClaudeCli();
+  if (!claude.available) {
+    printError("Claude Code CLI is not available. Run `claude:doctor` for details.");
+    return EXIT_CLAUDE_MISSING;
+  }
+
+  const effectiveTimeout = reviewOptions.timeout || getPlanTimeoutMs();
+  const claudeArgs = buildClaudePlanArgs(prompt, reviewOptions);
+  const result = runCommand("claude", claudeArgs, {
+    cwd: process.cwd(),
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: effectiveTimeout
+  });
+
+  if (result.error || result.status !== 0) {
+    printError(formatClaudeFailure(result, { action: "review", timeout: effectiveTimeout }));
+    return EXIT_PLAN_FAILED;
+  }
+
+  const output = redactSecrets(result.stdout.trimEnd());
+  if (!output.trim()) {
+    printError("Claude returned no review output. Try `claude:doctor` or a narrower diff.");
+    return EXIT_PLAN_FAILED;
+  }
+
+  console.log(output);
+  if (reviewOptions.outputPath) {
+    const savePath = path.resolve(process.cwd(), reviewOptions.outputPath);
+    fs.mkdirSync(path.dirname(savePath), { recursive: true });
+    fs.writeFileSync(
+      savePath,
+      formatSavedReview({
+        diffCommand: context.diffCommand,
+        output,
+        explicitSkills: uniqueValues(reviewOptions.explicitSkills)
+      }),
+      "utf8"
+    );
+    console.log(`Review saved: ${savePath}`);
+  }
+  return 0;
+}
+
+function parseReviewArgs(args) {
+  const options = {
+    base: "",
+    staged: false,
+    requestArgs: [],
+    explicitSkills: [],
+    dryRun: false,
+    showSkills: false,
+    scope: "all",
+    query: "",
+    format: "text",
+    maxFiles: DEFAULT_CONTEXT_FILE_LIMIT,
+    model: "",
+    outputPath: "",
+    timeout: 0,
+    error: ""
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--base") {
+      options.base = args[++index] || "";
+    } else if (arg.startsWith("--base=")) {
+      options.base = arg.slice("--base=".length);
+    } else if (arg === "--staged") {
+      options.staged = true;
+    } else if (arg === "--dry-run") {
+      options.dryRun = true;
+    } else if (arg === "--output") {
+      options.outputPath = args[++index] || "";
+    } else if (arg.startsWith("--output=")) {
+      options.outputPath = arg.slice("--output=".length);
+    } else if (arg === "--save") {
+      options.outputPath = "REVIEW.md";
+    } else if (arg === "--model") {
+      options.model = args[++index] || "";
+    } else if (arg.startsWith("--model=")) {
+      options.model = arg.slice("--model=".length);
+    } else if (arg === "--timeout") {
+      options.timeout = parsePositiveIntegerOption(args[++index] || "", "--timeout");
+    } else if (arg.startsWith("--timeout=")) {
+      options.timeout = parsePositiveIntegerOption(arg.slice("--timeout=".length), "--timeout");
+    } else if (arg === "--max-files") {
+      options.maxFiles = parsePositiveIntegerOption(args[++index] || "", "--max-files");
+    } else if (arg.startsWith("--max-files=")) {
+      options.maxFiles = parsePositiveIntegerOption(arg.slice("--max-files=".length), "--max-files");
+    } else if (arg === "--show-skills") {
+      options.showSkills = true;
+    } else if (arg === "--skill") {
+      addExplicitSkills(options, args[++index] || "");
+    } else if (arg.startsWith("--skill=")) {
+      addExplicitSkills(options, arg.slice("--skill=".length));
+    } else if (arg === "--skills") {
+      addExplicitSkills(options, args[++index] || "");
+    } else if (arg.startsWith("--skills=")) {
+      addExplicitSkills(options, arg.slice("--skills=".length));
+    } else if (arg === "--scope") {
+      options.scope = args[++index] || "";
+    } else if (arg.startsWith("--scope=")) {
+      options.scope = arg.slice("--scope=".length);
+    } else if (arg === "--query") {
+      options.query = args[++index] || "";
+    } else if (arg.startsWith("--query=")) {
+      options.query = arg.slice("--query=".length);
+    } else {
+      options.requestArgs.push(arg);
+    }
+  }
+
+  if (!["all", "local", "global"].includes(options.scope)) {
+    options.error = "Invalid --scope. Use all, local, or global.";
+  }
+  if (options.staged && options.base) {
+    options.error = "Use either --staged or --base <ref>, not both.";
+  }
+  if (options.outputPath === "") {
+    const hasOutputFlag = args.some((arg) => arg === "--output" || arg.startsWith("--output="));
+    if (hasOutputFlag) {
+      options.error = "Missing --output value.";
+    }
+  }
+  if (options.timeout === null || options.maxFiles === null) {
+    options.error = "Numeric options must be positive integers.";
+  }
+  if (options.requestArgs.length > 0) {
+    options.error = `Unexpected review argument: ${options.requestArgs[0]}`;
+  }
+
+  return options;
+}
+
+function collectReviewContext(cwd, options) {
+  const diffArgs = options.staged
+    ? ["diff", "--cached"]
+    : options.base
+      ? ["diff", options.base]
+      : ["diff", "HEAD"];
+  const diffCommand = `git ${diffArgs.join(" ")}`;
+
+  const result = runCommand("git", diffArgs, { cwd, maxBuffer: 50 * 1024 * 1024 });
+  if (result.error || result.status !== 0) {
+    const detail = redactSecrets((result.stderr || result.error?.message || "").trim());
+    return {
+      error: `Failed to run ${diffCommand}.${detail ? `${os.EOL}${detail}` : ""}`
+    };
+  }
+
+  const { text: diff, truncated } = truncateDiff(redactSecrets(result.stdout.trim()));
+
+  return {
+    cwd,
+    diffCommand,
+    diff,
+    truncated,
+    gitStatus: getGitStatus(cwd),
+    files: getVisibleFiles(cwd, options.maxFiles).join(os.EOL)
+  };
+}
+
+function truncateDiff(diff) {
+  if (Buffer.byteLength(diff, "utf8") <= DEFAULT_REVIEW_DIFF_BYTE_LIMIT) {
+    return { text: diff, truncated: false };
+  }
+  const buffer = Buffer.from(diff, "utf8").subarray(0, DEFAULT_REVIEW_DIFF_BYTE_LIMIT);
+  return { text: buffer.toString("utf8"), truncated: true };
+}
+
+function buildReviewPrompt({ template, context, skillContext = "" }) {
+  const truncationNote = context.truncated
+    ? `${os.EOL}(diff truncated to ${DEFAULT_REVIEW_DIFF_BYTE_LIMIT} bytes; review the visible portion)`
+    : "";
+  return `${template.trim()}
+
+${skillContext ? `${skillContext.trim()}${os.EOL}${os.EOL}` : ""}Diff to review (${context.diffCommand}):${truncationNote}
+
+${context.diff || "(no diff output)"}
+
+Workspace context gathered by Codex without reading secret values:
+
+Current directory:
+${context.cwd}
+
+Git status:
+${context.gitStatus || "(git status unavailable or empty)"}
+
+Visible files:
+${context.files || "(no files found)"}
+`;
+}
+
+function formatSavedReview({ diffCommand, output, explicitSkills }) {
+  const skills = explicitSkills.length > 0 ? explicitSkills.join(", ") : "(none)";
+  return `<!-- Generated by claude:review -->
+
+Generated: ${new Date().toISOString()}
+Reviewed: ${diffCommand}
+Skills: ${skills}
+
+---
+
+${output.trimEnd()}
+`;
+}
+
+function printReviewDryRun(prompt, options = {}) {
+  const previewArgs = buildClaudePlanArgs(prompt, options)
+    .map((arg) => (arg === prompt ? "<prompt>" : arg))
+    .join(" ");
+  console.log(`Claude review dry run
+
+No Claude CLI call was made.
+
+Command preview:
+claude ${previewArgs}
+
+Prompt:
+${prompt}`);
 }
 
 function printSkillsHelp() {

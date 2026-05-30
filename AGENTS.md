@@ -14,6 +14,8 @@ MVP에서는 다음 기능만 구현한다.
 - claude:setup
 - claude:plan
 
+기본 흐름이 안정화된 뒤 같은 read-only 원칙으로 claude:review를 추가했다. Claude가 현재 git diff를 검토하고, Codex가 그 결과를 반영한다.
+
 Claude는 계획을 세우고, Codex는 구현한다.
 
 ## 역할
@@ -208,4 +210,4 @@ Codex가 계획을 검증한다.
 
 Codex가 구현한다.
 
-이 흐름이 안정화되기 전에는 review, status, result, cancel, MCP, background job을 추가하지 않는다.
+이 흐름이 안정화된 뒤 read-only review를 추가했다. status, result, cancel, MCP, background job은 아직 추가하지 않는다.

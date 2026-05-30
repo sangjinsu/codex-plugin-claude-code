@@ -28,7 +28,8 @@
       "claude:setup",
       "claude:plan --recommend-skills frontend polish",
       "claude:skills --query frontend",
-      "claude:plan add a small feature"
+      "claude:plan add a small feature",
+      "claude:review --staged"
     ],
     "brandColor": "#8B5CF6",
     "screenshots": []
